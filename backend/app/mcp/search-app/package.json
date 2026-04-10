@@ -1,0 +1,20 @@
+{
+  "name": "search-app-ui",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "UI build toolchain for the Search MCP App (produces dist/mcp-app.html)",
+  "scripts": {
+    "build": "cross-env INPUT=mcp-app.html vite build",
+    "watch": "cross-env INPUT=mcp-app.html vite build --watch"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.0.0"
+  },
+  "devDependencies": {
+    "cross-env": "^10.1.0",
+    "typescript": "^5.9.3",
+    "vite": "^6.0.0",
+    "vite-plugin-singlefile": "^2.3.0"
+  }
+}
