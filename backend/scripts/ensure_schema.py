@@ -1,11 +1,12 @@
 """
 Standalone script: ensure the target PostgreSQL schema exists (CREATE SCHEMA IF NOT EXISTS).
 
-Run this *before* Alembic migrations, checkpointer setup, and grant_rw_privileges
-when DB_SCHEMA is not ``public``. Idempotent and safe to run multiple times.
+Run this *before* Alembic migrations, checkpointer setup, and grant_rw_privileges.
+Idempotent and safe to run multiple times.
 
-The ``public`` schema always exists in PostgreSQL; this script exits successfully
-without running SQL in that case.
+``DB_SCHEMA`` must be set explicitly in ``.env`` (no default fallback).
+If set to ``public``, the script exits successfully without running SQL since
+``public`` exists by default in every PostgreSQL database.
 
 Uses admin credentials when set (``DATABASE_ADMIN_*``), otherwise falls back to
 the read-write user (same resolution as ``setup_checkpointer.py``).
@@ -49,7 +50,7 @@ DATABASE_URL = (
     _build_pg_url("DATABASE_ADMIN_USER", "DATABASE_ADMIN_PASSWORD")
     or _build_pg_url("DATABASE_USER", "DATABASE_PASSWORD")
 )
-TARGET_SCHEMA = os.environ.get("DB_SCHEMA", "public").strip()
+TARGET_SCHEMA = os.environ.get("DB_SCHEMA", "").strip()
 
 
 def _redact(url: str) -> str:
@@ -68,7 +69,12 @@ async def main() -> None:
         sys.exit(1)
 
     if not TARGET_SCHEMA:
-        print("ERROR: DB_SCHEMA is empty.", file=sys.stderr)
+        print(
+            "ERROR: DB_SCHEMA is not set.\n"
+            "Set DB_SCHEMA in .env to the target schema name "
+            "(e.g. DB_SCHEMA=my_app_schema).",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     if os.environ.get("DATABASE_ADMIN_USER"):
