@@ -5,10 +5,9 @@ from typing import Literal
 
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
 from langgraph.types import Command
 
-from app.core.config import settings
+from app.core.llm import get_chat_llm
 from app.graph.state import SupervisorState
 
 logger = logging.getLogger(__name__)
@@ -50,10 +49,7 @@ def check_request_status(request_id: str = "") -> str:
 
 SUPERVISOR_TOOLS = [start_access_request, answer_question, check_request_status]
 
-_llm = ChatOpenAI(
-    model=settings.MODEL_NAME,
-    api_key=settings.OPENAI_API_KEY,
-).bind_tools(SUPERVISOR_TOOLS)
+_llm = get_chat_llm().bind_tools(SUPERVISOR_TOOLS)
 
 
 def supervisor_node(

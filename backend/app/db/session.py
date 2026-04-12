@@ -4,7 +4,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.core.config import settings
 
-engine = create_async_engine(settings.async_database_url, echo=False)
+_connect_args: dict = {}
+if settings.DB_SCHEMA and settings.DB_SCHEMA != "public":
+    _connect_args["server_settings"] = {"search_path": settings.DB_SCHEMA}
+
+engine = create_async_engine(
+    settings.async_database_url,
+    echo=False,
+    connect_args=_connect_args,
+)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 

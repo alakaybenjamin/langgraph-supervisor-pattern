@@ -3,9 +3,8 @@ from __future__ import annotations
 import logging
 
 from langchain_chroma import Chroma
-from langchain_openai import OpenAIEmbeddings
 
-from app.core.config import settings
+from app.core.llm import get_embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -75,10 +74,7 @@ DATA_PRODUCTS = [
 
 class SearchService:
     def __init__(self) -> None:
-        embeddings = OpenAIEmbeddings(
-            model=settings.EMBEDDING_MODEL,
-            api_key=settings.OPENAI_API_KEY,
-        )
+        embeddings = get_embeddings()
         self._store = Chroma(
             embedding_function=embeddings,
             collection_name="data_products",

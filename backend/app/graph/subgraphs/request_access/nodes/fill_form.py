@@ -3,10 +3,9 @@ from __future__ import annotations
 import logging
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 from langgraph.types import interrupt
 
-from app.core.config import settings
+from app.core.llm import get_chat_llm
 from app.graph.state import AccessRequestState
 
 logger = logging.getLogger(__name__)
@@ -29,11 +28,7 @@ message is unrelated to navigation. This is the default if unsure.
 Respond with ONLY the intent name. No explanation, no punctuation.\
 """)
 
-_classifier_llm = ChatOpenAI(
-    model="gpt-4o-mini",
-    api_key=settings.OPENAI_API_KEY,
-    temperature=0,
-)
+_classifier_llm = get_chat_llm(model="gpt-4o-mini", temperature=0)
 
 
 def _classify_form_intent(user_text: str) -> str:

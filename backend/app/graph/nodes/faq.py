@@ -3,9 +3,8 @@ from __future__ import annotations
 import logging
 
 from langchain_core.messages import AIMessage
-from langchain_openai import ChatOpenAI
 
-from app.core.config import settings
+from app.core.llm import get_chat_llm
 from app.graph.state import SupervisorState
 
 logger = logging.getLogger(__name__)
@@ -33,7 +32,7 @@ def faq_node(state: SupervisorState) -> dict:
         for r in search_results
     )
 
-    llm = ChatOpenAI(model=settings.MODEL_NAME, api_key=settings.OPENAI_API_KEY)
+    llm = get_chat_llm()
     synthesis_prompt = [
         {"role": "system", "content": "You are a helpful data governance assistant. Use the search results below to answer the user's question concisely. If the results don't contain relevant information, say so honestly."},
         {"role": "user", "content": f"Question: {question}\n\nSearch Results:\n{context}"},
