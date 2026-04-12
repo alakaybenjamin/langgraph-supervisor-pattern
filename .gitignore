@@ -39,6 +39,7 @@ backend/uv.lock
 
 # IDE / Editor
 .vscode/
+!.vscode/launch.json
 .idea/
 *.swp
 *.swo
