@@ -8,8 +8,8 @@ Idempotent and safe to run multiple times.
 If set to ``public``, the script exits successfully without running SQL since
 ``public`` exists by default in every PostgreSQL database.
 
-Uses admin credentials when set (``DATABASE_ADMIN_*``), otherwise falls back to
-the read-write user (same resolution as ``setup_checkpointer.py``).
+Requires admin credentials (``DATABASE_ADMIN_USER`` / ``DATABASE_ADMIN_PASSWORD``).
+The RW user must never be used for DDL operations.
 
 Usage
 -----
@@ -46,10 +46,7 @@ def _build_pg_url(user_env: str, password_env: str) -> str:
     return ""
 
 
-DATABASE_URL = (
-    _build_pg_url("DATABASE_ADMIN_USER", "DATABASE_ADMIN_PASSWORD")
-    or _build_pg_url("DATABASE_USER", "DATABASE_PASSWORD")
-)
+DATABASE_URL = _build_pg_url("DATABASE_ADMIN_USER", "DATABASE_ADMIN_PASSWORD")
 TARGET_SCHEMA = os.environ.get("DB_SCHEMA", "").strip()
 
 
@@ -60,10 +57,10 @@ def _redact(url: str) -> str:
 async def main() -> None:
     if not DATABASE_URL:
         print(
-            "ERROR: No database URL could be resolved.\n"
-            "Set DATABASE_ADMIN_USER + DATABASE_ADMIN_PASSWORD "
-            "(or DATABASE_USER + DATABASE_PASSWORD) together with "
-            "DATABASE_HOSTNAME and DATABASE_NAME.",
+            "ERROR: No admin database URL could be resolved.\n"
+            "Set DATABASE_ADMIN_USER + DATABASE_ADMIN_PASSWORD together with "
+            "DATABASE_HOSTNAME and DATABASE_NAME.\n"
+            "DDL scripts must use admin credentials exclusively.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -77,14 +74,9 @@ async def main() -> None:
         )
         sys.exit(1)
 
-    if os.environ.get("DATABASE_ADMIN_USER"):
-        src = "DATABASE_ADMIN_USER / DATABASE_ADMIN_PASSWORD"
-    else:
-        src = "DATABASE_USER / DATABASE_PASSWORD (fallback)"
-
     print("=" * 60)
     print("Ensure PostgreSQL schema exists")
-    print(f"DB     : {_redact(DATABASE_URL)} [{src}]")
+    print(f"DB     : {_redact(DATABASE_URL)} [DATABASE_ADMIN_USER]")
     print(f"Schema : {TARGET_SCHEMA}")
     print("=" * 60)
 

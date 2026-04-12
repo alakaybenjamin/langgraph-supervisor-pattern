@@ -23,7 +23,7 @@ _db_schema = settings.DB_SCHEMA if settings.DB_SCHEMA != "public" else None
 
 def run_migrations_offline() -> None:
     context.configure(
-        url=settings.sqlalchemy_sync_database_url,
+        url=settings.sqlalchemy_admin_database_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -37,7 +37,7 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     connectable = create_engine(
-        settings.sqlalchemy_sync_database_url,
+        settings.sqlalchemy_admin_database_url,
         poolclass=pool.NullPool,
     )
 

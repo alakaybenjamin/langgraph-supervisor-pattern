@@ -10,7 +10,7 @@ Usage
 
 What it does
 ------------
-1. Connects to the database using admin credentials (falls back to RW credentials).
+1. Connects to the database using admin credentials (required).
 2. Reads the current contents of ``<schema>.checkpoint_migrations`` -- BEFORE snapshot.
 3. Calls AsyncPostgresSaver.setup() with ``search_path=<schema>`` so all
    checkpointer tables land in that schema (idempotent).
@@ -59,10 +59,7 @@ def _build_pg_url(user_env: str, password_env: str) -> str:
     return ""
 
 
-DATABASE_URL = (
-    _build_pg_url("DATABASE_ADMIN_USER", "DATABASE_ADMIN_PASSWORD")
-    or _build_pg_url("DATABASE_USER", "DATABASE_PASSWORD")
-)
+DATABASE_URL = _build_pg_url("DATABASE_ADMIN_USER", "DATABASE_ADMIN_PASSWORD")
 TARGET_SCHEMA = os.environ.get("DB_SCHEMA", "public")
 
 
@@ -97,22 +94,17 @@ def _redact(url: str) -> str:
 async def main() -> None:
     if not DATABASE_URL:
         print(
-            "ERROR: No database URL could be resolved.\n"
-            "Set DATABASE_ADMIN_USER + DATABASE_ADMIN_PASSWORD "
-            "(or DATABASE_USER + DATABASE_PASSWORD) together with "
-            "DATABASE_HOSTNAME and DATABASE_NAME.",
+            "ERROR: No admin database URL could be resolved.\n"
+            "Set DATABASE_ADMIN_USER + DATABASE_ADMIN_PASSWORD together with "
+            "DATABASE_HOSTNAME and DATABASE_NAME.\n"
+            "DDL scripts must use admin credentials exclusively.",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    if os.environ.get("DATABASE_ADMIN_USER"):
-        src = "DATABASE_ADMIN_USER / DATABASE_ADMIN_PASSWORD"
-    else:
-        src = "DATABASE_USER / DATABASE_PASSWORD (fallback)"
-
     print("=" * 60)
     print("LangGraph checkpointer setup")
-    print(f"DB     : {_redact(DATABASE_URL)} [{src}]")
+    print(f"DB     : {_redact(DATABASE_URL)} [DATABASE_ADMIN_USER]")
     print(f"Schema : {TARGET_SCHEMA}")
     print("=" * 60)
 

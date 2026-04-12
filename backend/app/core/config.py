@@ -34,8 +34,12 @@ class Settings(BaseSettings):
     DATABASE_HOSTNAME: str = "localhost"
     DATABASE_PORT: int = 5432
     DATABASE_NAME: str = "postgres"
-    DATABASE_USER: str = ""
-    DATABASE_PASSWORD: str = ""
+    # Read-write user — used by the running app at runtime
+    DATABASE_RW_USER: str = ""
+    DATABASE_RW_PASSWORD: str = ""
+    # Admin user — DDL only (Alembic migrations, checkpointer setup), never deployed
+    DATABASE_ADMIN_USER: str = ""
+    DATABASE_ADMIN_PASSWORD: str = ""
     DB_SCHEMA: str = "public"
 
     TAVILY_API_KEY: str = ""
@@ -63,12 +67,17 @@ class Settings(BaseSettings):
                 )
         return self
 
-    def _base_dsn(self, driver: str = "postgresql") -> str:
+    def _base_dsn(
+        self, driver: str = "postgresql", *, user: str = "", password: str = "",
+    ) -> str:
+        """Build a DSN from the shared host/port/name and the given credentials."""
+        user = user or self.DATABASE_RW_USER
+        password = password or self.DATABASE_RW_PASSWORD
         userinfo = ""
-        if self.DATABASE_USER:
-            userinfo = self.DATABASE_USER
-            if self.DATABASE_PASSWORD:
-                userinfo += f":{self.DATABASE_PASSWORD}"
+        if user:
+            userinfo = user
+            if password:
+                userinfo += f":{password}"
             userinfo += "@"
         return (
             f"{driver}://{userinfo}"
@@ -76,16 +85,15 @@ class Settings(BaseSettings):
             f"/{self.DATABASE_NAME}"
         )
 
+    # -- RW URLs (runtime app, LangGraph checkpointer) -----------------------
+
     @property
     def DATABASE_URL(self) -> str:
-        """Libpq-style DSN for raw ``psycopg`` APIs (e.g. LangGraph checkpointer).
+        """Libpq-style DSN using **RW** credentials.
 
         Plain ``postgresql://`` — do not pass this to SQLAlchemy's sync
-        ``create_engine``; it defaults to the ``psycopg2`` driver. Use
-        :attr:`sqlalchemy_sync_database_url` for Alembic.
-
-        Includes ``?options=-csearch_path=<schema>`` when DB_SCHEMA is not
-        the default ``public``.
+        ``create_engine`` (it defaults to psycopg2). Use
+        :attr:`sqlalchemy_admin_database_url` for Alembic.
         """
         url = self._base_dsn("postgresql")
         if self.DB_SCHEMA and self.DB_SCHEMA != "public":
@@ -93,17 +101,37 @@ class Settings(BaseSettings):
         return url
 
     @property
-    def sqlalchemy_sync_database_url(self) -> str:
-        """Sync URL for Alembic / SQLAlchemy using psycopg v3.
+    def async_database_url(self) -> str:
+        """Async DSN (``postgresql+asyncpg://``) using **RW** credentials.
 
-        ``postgresql+psycopg://`` selects the installed ``psycopg`` package.
-        A bare ``postgresql://`` URL makes SQLAlchemy import ``psycopg2``,
-        which is not a project dependency.
+        Schema is set via the asyncpg ``server_settings`` connect arg
+        rather than query-string options, so this URL has no schema suffix.
         """
-        url = self._base_dsn("postgresql+psycopg")
+        return self._base_dsn("postgresql+asyncpg")
+
+    # -- Admin URLs (Alembic DDL — admin credentials only) ----------------------
+
+    @property
+    def sqlalchemy_admin_database_url(self) -> str:
+        """Sync URL for Alembic DDL using **admin** credentials and psycopg v3.
+
+        Requires ``DATABASE_ADMIN_USER`` to be set; raises if missing.
+        """
+        if not self.DATABASE_ADMIN_USER:
+            raise ValueError(
+                "DATABASE_ADMIN_USER is required for DDL operations "
+                "(Alembic migrations). Set it in .env."
+            )
+        url = self._base_dsn(
+            "postgresql+psycopg",
+            user=self.DATABASE_ADMIN_USER,
+            password=self.DATABASE_ADMIN_PASSWORD,
+        )
         if self.DB_SCHEMA and self.DB_SCHEMA != "public":
             url += self._search_path_option()
         return url
+
+    # -- Helpers --------------------------------------------------------------
 
     def _search_path_option(self) -> str:
         """URL query-string fragment that sets ``search_path`` via libpq options.
@@ -114,15 +142,6 @@ class Settings(BaseSettings):
         from urllib.parse import quote
 
         return "?options=" + quote(f'-csearch_path="{self.DB_SCHEMA}"')
-
-    @property
-    def async_database_url(self) -> str:
-        """Async PostgreSQL DSN for SQLAlchemy + asyncpg.
-
-        Schema is set via the asyncpg ``server_settings`` connect arg
-        rather than query-string options, so this URL has no schema suffix.
-        """
-        return self._base_dsn("postgresql+asyncpg")
 
 
 settings = Settings()

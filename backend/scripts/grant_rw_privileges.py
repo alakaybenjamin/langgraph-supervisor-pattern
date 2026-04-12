@@ -46,7 +46,7 @@ def _build_pg_url(user_env: str, password_env: str) -> str:
 
 
 DATABASE_URL = _build_pg_url("DATABASE_ADMIN_USER", "DATABASE_ADMIN_PASSWORD")
-RW_USER = os.environ.get("DATABASE_USER", "")
+RW_USER = os.environ.get("DATABASE_RW_USER", "")
 TARGET_SCHEMA = os.environ.get("DB_SCHEMA", "public")
 
 
@@ -65,7 +65,7 @@ async def main() -> None:
         sys.exit(1)
 
     if not RW_USER:
-        print("ERROR: DATABASE_USER is not set.", file=sys.stderr)
+        print("ERROR: DATABASE_RW_USER is not set.", file=sys.stderr)
         sys.exit(1)
 
     print("=" * 60)

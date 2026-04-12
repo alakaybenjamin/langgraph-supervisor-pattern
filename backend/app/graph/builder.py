@@ -27,8 +27,7 @@ async def build_graph() -> Any:
 
     _checkpointer_ctx = AsyncPostgresSaver.from_conn_string(settings.DATABASE_URL)
     checkpointer = await _checkpointer_ctx.__aenter__()
-    await checkpointer.setup()
-    logger.info("PostgresSaver checkpointer initialized")
+    logger.info("PostgresSaver checkpointer connected (tables must be created via scripts/setup_checkpointer.py)")
 
     request_access_subgraph = build_request_access_subgraph().compile(
         checkpointer=True
