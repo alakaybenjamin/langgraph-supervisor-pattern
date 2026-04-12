@@ -6,7 +6,7 @@ from app.core.config import settings
 
 _connect_args: dict = {}
 if settings.DB_SCHEMA and settings.DB_SCHEMA != "public":
-    _connect_args["server_settings"] = {"search_path": settings.DB_SCHEMA}
+    _connect_args["server_settings"] = {"search_path": f'"{settings.DB_SCHEMA}"'}
 
 engine = create_async_engine(
     settings.async_database_url,

@@ -78,15 +78,42 @@ class Settings(BaseSettings):
 
     @property
     def DATABASE_URL(self) -> str:
-        """Sync PostgreSQL DSN (psycopg / libpq).
+        """Libpq-style DSN for raw ``psycopg`` APIs (e.g. LangGraph checkpointer).
+
+        Plain ``postgresql://`` — do not pass this to SQLAlchemy's sync
+        ``create_engine``; it defaults to the ``psycopg2`` driver. Use
+        :attr:`sqlalchemy_sync_database_url` for Alembic.
 
         Includes ``?options=-csearch_path=<schema>`` when DB_SCHEMA is not
         the default ``public``.
         """
         url = self._base_dsn("postgresql")
         if self.DB_SCHEMA and self.DB_SCHEMA != "public":
-            url += f"?options=-csearch_path%3D{self.DB_SCHEMA}"
+            url += self._search_path_option()
         return url
+
+    @property
+    def sqlalchemy_sync_database_url(self) -> str:
+        """Sync URL for Alembic / SQLAlchemy using psycopg v3.
+
+        ``postgresql+psycopg://`` selects the installed ``psycopg`` package.
+        A bare ``postgresql://`` URL makes SQLAlchemy import ``psycopg2``,
+        which is not a project dependency.
+        """
+        url = self._base_dsn("postgresql+psycopg")
+        if self.DB_SCHEMA and self.DB_SCHEMA != "public":
+            url += self._search_path_option()
+        return url
+
+    def _search_path_option(self) -> str:
+        """URL query-string fragment that sets ``search_path`` via libpq options.
+
+        The schema name is double-quoted so names with hyphens or other
+        special characters are handled correctly by PostgreSQL.
+        """
+        from urllib.parse import quote
+
+        return "?options=" + quote(f'-csearch_path="{self.DB_SCHEMA}"')
 
     @property
     def async_database_url(self) -> str:
