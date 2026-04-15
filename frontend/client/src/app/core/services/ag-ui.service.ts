@@ -15,7 +15,7 @@ export class AgUiService {
   /** True while a run is in flight. */
   running = signal<boolean>(false);
 
-  private readonly endpoint = `${environment.apiBaseUrl}/ag-ui`;
+  private readonly endpoint = `${environment.apiBaseUrl}/chat/stream`;
   private abortController: AbortController | null = null;
 
   /**

@@ -1,7 +1,7 @@
-"""AG-UI streaming endpoint.
+"""Chat streaming endpoint (AG-UI protocol over SSE).
 
-POST /ag-ui accepts a ``RunAgentInput`` body and returns an SSE stream of
-AG-UI protocol events.
+POST /chat/stream accepts a ``RunAgentInput`` body and returns an SSE stream
+of AG-UI protocol events.
 """
 
 from __future__ import annotations
@@ -18,11 +18,11 @@ from app.service.ag_ui_service import AgUiService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/ag-ui", tags=["ag-ui"])
+router = APIRouter(prefix="/chat", tags=["chat"])
 
 
-@router.post("")
-async def ag_ui_stream(
+@router.post("/stream")
+async def chat_stream(
     body: RunAgentInput,
     request: Request,
     svc: AgUiService = Depends(get_ag_ui_service),

@@ -107,7 +107,7 @@ export interface AgUiMessage {
 }
 
 /**
- * Body sent to POST /ag-ui.
+ * Body sent to POST /chat/stream.
  *
  * Uses snake_case for the *request* because the FastAPI Pydantic model
  * ``RunAgentInput`` expects snake_case fields.
