@@ -49,9 +49,6 @@ import { ChatInputComponent } from './chat-input/chat-input.component';
         }
         @if (chatService.loading()) {
           <div class="typing-indicator">
-            @if (chatService.currentStep()) {
-              <span class="step-label">{{ stepLabel(chatService.currentStep()!) }}</span>
-            }
             <div class="dot"></div>
             <div class="dot"></div>
             <div class="dot"></div>
@@ -145,7 +142,6 @@ import { ChatInputComponent } from './chat-input/chat-input.component';
 
       .typing-indicator {
         display: flex;
-        align-items: center;
         gap: 6px;
         padding: 12px 16px;
         margin-left: 48px;
@@ -164,13 +160,6 @@ import { ChatInputComponent } from './chat-input/chat-input.component';
             animation-delay: 0.4s;
           }
         }
-      }
-
-      .step-label {
-        font-size: 12px;
-        color: #6366f1;
-        font-weight: 500;
-        margin-right: 4px;
       }
 
       @keyframes bounce {
@@ -193,23 +182,6 @@ export class ChatComponent implements AfterViewChecked {
 
   ngAfterViewChecked(): void {
     this.scrollToBottom();
-  }
-
-  private readonly stepLabels: Record<string, string> = {
-    supervisor: 'Thinking',
-    faq: 'Searching knowledge base',
-    status_check: 'Checking status',
-    narrow: 'Narrowing search',
-    show_results: 'Showing results',
-    search_app: 'Searching',
-    review_cart: 'Reviewing cart',
-    fill_form: 'Filling form',
-    confirm: 'Confirming',
-    submit: 'Submitting',
-  };
-
-  stepLabel(step: string): string {
-    return this.stepLabels[step] ?? step.replace(/_/g, ' ');
   }
 
   onSend(message: string): void {

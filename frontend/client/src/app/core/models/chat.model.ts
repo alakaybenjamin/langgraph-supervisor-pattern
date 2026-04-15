@@ -6,13 +6,9 @@ export interface ChatMessage {
 }
 
 export interface ChatRequest {
-  message: string;
-  thread_id: string;
-  user_id: string;
-}
-
-export interface ChatResumeRequest {
-  resume_data: Record<string, unknown>;
+  action: 'send' | 'resume';
+  message?: string;
+  resume_data?: Record<string, unknown>;
   thread_id: string;
   user_id: string;
 }
@@ -23,9 +19,23 @@ export interface InterruptPayload {
   thread_id: string;
 }
 
-export interface ChatResponse {
-  type: 'message' | 'interrupt' | 'error';
+export interface SSETokenEvent {
+  token: string;
+}
+
+export interface SSEDoneEvent {
+  type: 'message';
   content: string;
   thread_id: string;
-  interrupt?: InterruptPayload | null;
+}
+
+export interface SSEInterruptEvent {
+  type: 'interrupt';
+  interrupt_value: Record<string, unknown>;
+  thread_id: string;
+}
+
+export interface SSEErrorEvent {
+  type: 'error';
+  content: string;
 }

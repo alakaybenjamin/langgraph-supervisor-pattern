@@ -1,30 +1,27 @@
-import { inject, Injectable, signal } from '@angular/core';
+import { Injectable, signal } from '@angular/core';
 import {
   ChatMessage,
-  ChatResponse,
+  ChatRequest,
   InterruptPayload,
+  SSEDoneEvent,
+  SSEInterruptEvent,
+  SSETokenEvent,
 } from '../models/chat.model';
-import {
-  AgUiEvent,
-  AgUiEventType,
-  CustomAgUiEvent,
-  RunAgentInput,
-  TextMessageContentEvent,
-  TextMessageStartEvent,
-} from '../models/ag-ui.model';
-import { AgUiService } from './ag-ui.service';
+import { environment } from '../../../environments/environment';
 import { v4 as uuidv4 } from 'uuid';
+
+interface InterruptState {
+  interrupt: InterruptPayload;
+}
 
 @Injectable({ providedIn: 'root' })
 export class ChatService {
   messages = signal<ChatMessage[]>([]);
   threadId = signal<string>(uuidv4());
   loading = signal<boolean>(false);
-  currentInterrupt = signal<ChatResponse | null>(null);
-  currentStep = signal<string | null>(null);
+  currentInterrupt = signal<InterruptState | null>(null);
 
-  private agUi = inject(AgUiService);
-  private streamingMessageId: string | null = null;
+  private readonly apiUrl = environment.apiBaseUrl;
 
   async sendMessage(content: string): Promise<void> {
     const userMsg: ChatMessage = {
@@ -33,163 +30,157 @@ export class ChatService {
       timestamp: new Date(),
     };
     this.messages.update((msgs) => [...msgs, userMsg]);
-    this.loading.set(true);
 
-    const input: RunAgentInput = {
+    await this.streamRequest({
+      action: 'send',
+      message: content,
       thread_id: this.threadId(),
-      run_id: uuidv4(),
-      messages: [{ id: uuidv4(), role: 'user', content }],
-      tools: [],
-      state: {},
-      context: [],
-      forwarded_props: {},
-    };
-
-    try {
-      await this.agUi.run(input, (event) => this.handleEvent(event));
-    } catch (err: any) {
-      this.appendSystemMessage(`Error: ${err.message || err}`);
-    } finally {
-      this.loading.set(false);
-      this.streamingMessageId = null;
-    }
-  }
-
-  async resumeWithData(data: Record<string, unknown>): Promise<void> {
-    this.loading.set(true);
-    this.currentInterrupt.set(null);
-
-    const input: RunAgentInput = {
-      thread_id: this.threadId(),
-      run_id: uuidv4(),
-      messages: [],
-      tools: [],
-      state: { resume_data: data },
-      context: [],
-      forwarded_props: {},
-    };
-
-    try {
-      await this.agUi.run(input, (event) => this.handleEvent(event));
-    } catch (err: any) {
-      this.appendSystemMessage(`Resume error: ${err.message || err}`);
-    } finally {
-      this.loading.set(false);
-      this.streamingMessageId = null;
-    }
-  }
-
-  newThread(): void {
-    this.agUi.abort();
-    this.messages.set([]);
-    this.threadId.set(uuidv4());
-    this.currentInterrupt.set(null);
-    this.currentStep.set(null);
-    this.streamingMessageId = null;
-  }
-
-  // ---------------------------------------------------------------------------
-  // AG-UI event dispatcher
-  // ---------------------------------------------------------------------------
-
-  private handleEvent(event: AgUiEvent): void {
-    switch (event.type) {
-      case AgUiEventType.TEXT_MESSAGE_START:
-        this.onTextStart(event as TextMessageStartEvent);
-        break;
-
-      case AgUiEventType.TEXT_MESSAGE_CONTENT:
-        this.onTextContent(event as TextMessageContentEvent);
-        break;
-
-      case AgUiEventType.TEXT_MESSAGE_END:
-        this.streamingMessageId = null;
-        break;
-
-      case AgUiEventType.STEP_STARTED:
-        this.currentStep.set((event as { stepName: string }).stepName);
-        break;
-
-      case AgUiEventType.STEP_FINISHED:
-        this.currentStep.set(null);
-        break;
-
-      case AgUiEventType.CUSTOM:
-        this.onCustom(event as CustomAgUiEvent);
-        break;
-
-      case AgUiEventType.RUN_ERROR:
-        this.appendSystemMessage(
-          `Error: ${(event as { message: string }).message}`,
-        );
-        break;
-
-      default:
-        break;
-    }
-  }
-
-  private onTextStart(event: TextMessageStartEvent): void {
-    this.streamingMessageId = event.messageId;
-    const msg: ChatMessage = {
-      role: 'assistant',
-      content: '',
-      timestamp: new Date(),
-    };
-    this.messages.update((msgs) => [...msgs, msg]);
-  }
-
-  private onTextContent(event: TextMessageContentEvent): void {
-    if (this.streamingMessageId !== event.messageId) return;
-    this.messages.update((msgs) => {
-      const copy = [...msgs];
-      const last = copy[copy.length - 1];
-      if (last?.role === 'assistant') {
-        copy[copy.length - 1] = {
-          ...last,
-          content: last.content + event.delta,
-        };
-      }
-      return copy;
+      user_id: 'anonymous',
     });
   }
 
-  private onCustom(event: CustomAgUiEvent): void {
-    if (event.name !== 'interrupt') return;
+  async resumeWithData(data: Record<string, unknown>): Promise<void> {
+    this.currentInterrupt.set(null);
 
-    const interruptValue = event.value as Record<string, unknown>;
-    const interrupt: InterruptPayload = {
-      type: 'interrupt',
-      interrupt_value: interruptValue,
+    await this.streamRequest({
+      action: 'resume',
+      resume_data: data,
       thread_id: this.threadId(),
-    };
-
-    const resp: ChatResponse = {
-      type: 'interrupt',
-      content: '',
-      thread_id: this.threadId(),
-      interrupt,
-    };
-
-    this.currentInterrupt.set(resp);
-
-    const assistantMsg: ChatMessage = {
-      role: 'assistant',
-      content:
-        interruptValue['message']?.toString() ||
-        'Please complete the action in the panel.',
-      timestamp: new Date(),
-      interrupt,
-    };
-    this.messages.update((msgs) => [...msgs, assistantMsg]);
+      user_id: 'anonymous',
+    });
   }
 
-  private appendSystemMessage(text: string): void {
-    const msg: ChatMessage = {
-      role: 'system',
-      content: text,
+  newThread(): void {
+    this.messages.set([]);
+    this.threadId.set(uuidv4());
+    this.currentInterrupt.set(null);
+  }
+
+  private async streamRequest(body: ChatRequest): Promise<void> {
+    this.loading.set(true);
+
+    const placeholderMsg: ChatMessage = {
+      role: 'assistant',
+      content: '',
       timestamp: new Date(),
     };
-    this.messages.update((msgs) => [...msgs, msg]);
+    this.messages.update((msgs) => [...msgs, placeholderMsg]);
+
+    try {
+      const response = await fetch(`${this.apiUrl}/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok || !response.body) {
+        this.updateLastAssistantMessage(`Error: HTTP ${response.status}`);
+        return;
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        let eventName = '';
+        for (const line of lines) {
+          if (line.startsWith('event:')) {
+            eventName = line.slice(6).trim();
+          } else if (line.startsWith('data:') && eventName) {
+            const jsonStr = line.slice(5).trim();
+            this.handleSSEEvent(eventName, jsonStr);
+            eventName = '';
+          }
+        }
+      }
+
+      if (buffer.trim()) {
+        const lines = buffer.split('\n');
+        let eventName = '';
+        for (const line of lines) {
+          if (line.startsWith('event:')) {
+            eventName = line.slice(6).trim();
+          } else if (line.startsWith('data:') && eventName) {
+            this.handleSSEEvent(eventName, line.slice(5).trim());
+            eventName = '';
+          }
+        }
+      }
+    } catch (err: any) {
+      this.updateLastAssistantMessage(`Network error: ${err.message || err}`);
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
+  private handleSSEEvent(eventName: string, jsonStr: string): void {
+    try {
+      const data = JSON.parse(jsonStr);
+
+      switch (eventName) {
+        case 'token': {
+          const tokenData = data as SSETokenEvent;
+          this.appendToLastAssistantMessage(tokenData.token);
+          break;
+        }
+        case 'done': {
+          const doneData = data as SSEDoneEvent;
+          this.threadId.set(doneData.thread_id || this.threadId());
+          break;
+        }
+        case 'interrupt': {
+          const interruptData = data as SSEInterruptEvent;
+          this.threadId.set(interruptData.thread_id || this.threadId());
+          const payload: InterruptPayload = {
+            type: interruptData.type,
+            interrupt_value: interruptData.interrupt_value,
+            thread_id: interruptData.thread_id,
+          };
+          this.currentInterrupt.set({ interrupt: payload });
+
+          const msg =
+            interruptData.interrupt_value?.['message']?.toString() ||
+            'Please complete the action in the panel.';
+          this.updateLastAssistantMessage(msg, payload);
+          break;
+        }
+        case 'error': {
+          this.updateLastAssistantMessage(`Error: ${data.content || 'Unknown error'}`);
+          break;
+        }
+      }
+    } catch {
+      // malformed JSON — skip
+    }
+  }
+
+  private appendToLastAssistantMessage(token: string): void {
+    this.messages.update((msgs) => {
+      const updated = [...msgs];
+      const last = updated[updated.length - 1];
+      if (last?.role === 'assistant') {
+        updated[updated.length - 1] = { ...last, content: last.content + token };
+      }
+      return updated;
+    });
+  }
+
+  private updateLastAssistantMessage(content: string, interrupt?: InterruptPayload): void {
+    this.messages.update((msgs) => {
+      const updated = [...msgs];
+      const last = updated[updated.length - 1];
+      if (last?.role === 'assistant') {
+        updated[updated.length - 1] = { ...last, content, interrupt };
+      }
+      return updated;
+    });
   }
 }

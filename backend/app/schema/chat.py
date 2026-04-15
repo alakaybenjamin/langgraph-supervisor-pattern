@@ -1,17 +1,15 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
 class ChatRequest(BaseModel):
-    message: str
+    action: Literal["send", "resume"] = "send"
+    message: str = ""
+    resume_data: dict = Field(default_factory=dict)
     thread_id: str = Field(default="")
-    user_id: str = Field(default="anonymous")
-
-
-class ChatResumeRequest(BaseModel):
-    resume_data: dict
-    thread_id: str
     user_id: str = Field(default="anonymous")
 
 
@@ -22,7 +20,7 @@ class InterruptPayload(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    type: str  # "message" | "interrupt" | "error"
+    type: str
     content: str = ""
     thread_id: str = ""
     interrupt: InterruptPayload | None = None
