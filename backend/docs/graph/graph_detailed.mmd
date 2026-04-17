@@ -1,0 +1,28 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	recover_state(recover_state)
+	supervisor_router(supervisor_router)
+	request_access_subgraph(request_access_subgraph)
+	faq_kb_agent(faq_kb_agent)
+	general_faq_tavily_agent(general_faq_tavily_agent)
+	status_agent(status_agent)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> recover_state;
+	recover_state --> supervisor_router;
+	supervisor_router -.-> __end__;
+	supervisor_router -.-> faq_kb_agent;
+	supervisor_router -.-> general_faq_tavily_agent;
+	supervisor_router -.-> request_access_subgraph;
+	supervisor_router -.-> status_agent;
+	faq_kb_agent --> __end__;
+	general_faq_tavily_agent --> __end__;
+	request_access_subgraph --> __end__;
+	status_agent --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

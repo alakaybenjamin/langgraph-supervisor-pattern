@@ -19,7 +19,11 @@ from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
-from app.graph.router_logic import classify_resume_value
+from app.graph.prompts import SCOPE_MESSAGE
+from app.graph.router_logic import (
+    build_clarify_message,
+    classify_resume_value,
+)
 from app.graph.state import (
     RA_STEP_CHOOSE_ANONYMIZATION,
     RA_STEP_CHOOSE_DOMAIN,
@@ -33,10 +37,18 @@ from app.graph.state import (
     AppState,
 )
 from app.graph.subgraphs.request_access.helpers import SEARCH_APP_PAYLOAD
+from app.graph.subgraphs.request_access.nodes.steps import _summary_for
+from app.graph.subgraphs.request_access.prompts import SIDE_REMARK_HINT_MESSAGE
 from app.graph.subgraphs.request_access.nodes.navigation import (
     goto_target_step,
     handle_navigation,
     invalidate_downstream_state,
+)
+from app.graph.subgraphs.request_access.nodes.extract_search_intent import (
+    extract_search_intent_node,
+)
+from app.graph.subgraphs.request_access.nodes.mcp_prefetch import (
+    mcp_prefetch_facets,
 )
 from app.graph.subgraphs.request_access.nodes.steps import (
     choose_anonymization,
@@ -59,17 +71,38 @@ logger = logging.getLogger(__name__)
 
 
 def _dispatch_fresh(state: AppState) -> str:
-    """Return the next step node to run when no resume value is present."""
+    """Return the next step node to run when no resume value is present.
+
+    On first entry (no selected_domains, no facet cache yet) we route
+    through ``mcp_prefetch_facets`` so downstream chips render with the
+    MCP server's canonical ids/labels. Once the cache is populated the
+    prefetch node short-circuits.
+
+    Immediately before ``search_products`` we route through
+    ``extract_search_intent`` so the user's free-text query is normalized
+    and any embedded study id is lifted into ``ra_study_id``.
+    """
     cs = state.get("current_step") or ""
+    # Hop into prefetch first when a facet UI is about to render and the
+    # cache is empty.
+    if not state.get("mcp_facet_cache") and (
+        cs == RA_STEP_CHOOSE_DOMAIN or not state.get("selected_domains")
+    ):
+        return "mcp_prefetch_facets"
+
+    # Remap raw step ids so search always flows through the extractor.
+    if cs == RA_STEP_SEARCH_PRODUCTS:
+        return "extract_search_intent"
     if cs in RA_STEP_TO_NODE:
         return RA_STEP_TO_NODE[cs]
+
     # Infer from state when starting fresh
     if not state.get("selected_domains"):
         return "choose_domain"
     if not state.get("selected_anonymization"):
         return "choose_anonymization"
     if not state.get("product_search_results"):
-        return "search_products"
+        return "extract_search_intent"
     if not state.get("selected_products"):
         return "choose_products"
     if not state.get("generated_form_schema"):
@@ -105,11 +138,11 @@ def _apply_structured_answer(
         if facet == "anonymization":
             upd["selected_anonymization"] = v
             upd["current_step"] = RA_STEP_SEARCH_PRODUCTS
-            return {"update": upd, "next_node": "search_products"}
+            return {"update": upd, "next_node": "extract_search_intent"}
         if facet == "product_type":
             upd["product_type_filter"] = v
             upd["current_step"] = RA_STEP_SEARCH_PRODUCTS
-            return {"update": upd, "next_node": "search_products"}
+            return {"update": upd, "next_node": "extract_search_intent"}
 
     # --- Product multi-select answer ---
     if value.get("action") == "select" and "products" in value:
@@ -268,15 +301,50 @@ def route_request_access_turn(state: AppState) -> Command | dict:
     extra_messages = [raw] if raw is not None else []
     logger.info("route_request_access_turn: resume kind=%s", kind)
 
-    if kind == "faq" or kind == "general_web":
+    if kind == "out_of_scope":
+        # Tell the user we can't help and redisplay the current step so they
+        # can continue the workflow (workflow stays paused).
+        target = RA_STEP_TO_NODE.get(state.get("current_step") or "", "choose_domain")
+        scope_msg = AIMessage(content=SCOPE_MESSAGE)
+        logger.info("route_request_access_turn: out_of_scope -> redisplay %s", target)
+        return Command(
+            update={
+                "messages": extra_messages + [scope_msg],
+                "last_resume_value": None,
+            },
+            goto=target,
+        )
+
+    if kind == "clarify":
+        # Low-confidence classification — echo back what we think they
+        # meant and keep the workflow paused by redisplaying the current
+        # step.
+        target = RA_STEP_TO_NODE.get(state.get("current_step") or "", "choose_domain")
+        clarify_msg = AIMessage(
+            content=build_clarify_message(result, in_workflow=True)
+        )
+        logger.info(
+            "route_request_access_turn: clarify (candidate=%s) -> redisplay %s",
+            result.get("candidate_kind"), target,
+        )
+        return Command(
+            update={
+                "messages": extra_messages + [clarify_msg],
+                "last_resume_value": None,
+            },
+            goto=target,
+        )
+
+    if kind == "faq":
         # Hand off to the parent directly so the classifier's AIMessage (which
         # carries the user's current question in its tool_call args) reaches
         # parent state in the SAME ``Command.PARENT`` update. A two-step
         # handoff via an intermediate subgraph node would lose this message:
         # subgraph-local ``messages`` updates do not propagate to parent when
         # a later node exits via ``Command(graph=Command.PARENT, ...)``.
-        target = "faq_kb_agent" if kind == "faq" else "general_faq_tavily_agent"
-        return _handoff_to_parent_faq(state, goto=target, extra_messages=extra_messages)
+        return _handoff_to_parent_faq(
+            state, goto="faq_kb_agent", extra_messages=extra_messages,
+        )
 
     if kind == "nav":
         intent = result.get("nav_target") or RA_STEP_CHOOSE_DOMAIN
@@ -335,13 +403,7 @@ def route_request_access_turn(state: AppState) -> Command | dict:
         # Side-comment / chit-chat — append a gentle reminder and re-enter the
         # current step so its interrupt payload is redisplayed.
         target = RA_STEP_TO_NODE.get(state.get("current_step") or "", "choose_domain")
-        side_note = AIMessage(
-            content=(
-                "I'm waiting for your selection in the panel above. "
-                "You can also ask a **process or policy question** — your "
-                "access request stays paused."
-            )
-        )
+        side_note = AIMessage(content=SIDE_REMARK_HINT_MESSAGE)
         return Command(
             update={
                 "messages": extra_messages + [side_note],
@@ -397,8 +459,8 @@ def _handoff_to_parent_faq(
     * The workflow-state fields we want the parent (and next turn's
       ``supervisor_router``) to see must all be lifted explicitly.
     """
-    summary = state.get("paused_workflow_summary") or (
-        f"current_step={state.get('current_step') or '?'}"
+    summary = state.get("paused_workflow_summary") or _summary_for(
+        state, state.get("current_step") or ""
     )
     logger.info("handoff_to_parent_faq: summary=%s goto=%s", summary, goto)
     update: dict = {
@@ -453,8 +515,10 @@ def build_request_access_subgraph() -> Any:
     builder.add_node("goto_target_step", goto_target_step)
 
     # Business steps
+    builder.add_node("mcp_prefetch_facets", mcp_prefetch_facets)
     builder.add_node("choose_domain", choose_domain)
     builder.add_node("choose_anonymization", choose_anonymization)
+    builder.add_node("extract_search_intent", extract_search_intent_node)
     builder.add_node("search_products", search_products)
     builder.add_node("choose_products", choose_products)
     builder.add_node("show_cart", show_cart)
@@ -475,8 +539,10 @@ def build_request_access_subgraph() -> Any:
         "handle_navigation",
         "invalidate_downstream_state",
         "goto_target_step",
+        "mcp_prefetch_facets",
         "choose_domain",
         "choose_anonymization",
+        "extract_search_intent",
         "search_products",
         "choose_products",
         "show_cart",

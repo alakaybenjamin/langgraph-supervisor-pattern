@@ -1,6 +1,15 @@
 import { Component, Input, Output, EventEmitter } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { ChatMessage } from '../../../core/models/chat.model';
+import {
+  ActionButton,
+  ChatMessage,
+  FacetOption,
+  InterruptOf,
+  InterruptType,
+  Product,
+  asInterrupt,
+  hasInterruptType,
+} from '../../../core/models/chat.model';
 
 @Component({
   selector: 'app-message',
@@ -467,61 +476,51 @@ export class MessageComponent {
   @Output() refineSearch = new EventEmitter<void>();
 
   resolved = false;
-  selectedProducts: any[] = [];
+  selectedProducts: Product[] = [];
 
-  facetOptions(): { id: string; label: string }[] {
-    const val = this.msg.interrupt?.interrupt_value;
-    if (val?.['type'] === 'facet_selection' && val?.['options']) {
-      return val['options'] as { id: string; label: string }[];
-    }
-    return [];
+  /**
+   * Single typed narrowing helper — the frontend equivalent of the
+   * LangChain-docs `extractStructuredOutput<T>()` pattern. Callers get
+   * back a fully typed interrupt of the requested variant, or `null` if
+   * the message has a different interrupt type / is missing required
+   * fields.
+   */
+  private interrupt<T extends InterruptType>(type: T): InterruptOf<T> | null {
+    return asInterrupt(this.msg.interrupt?.interrupt_value, type);
+  }
+
+  facetOptions(): FacetOption[] {
+    return this.interrupt('facet_selection')?.options ?? [];
   }
 
   isProductSelection(): boolean {
-    return this.msg.interrupt?.interrupt_value?.['type'] === 'product_selection';
+    return hasInterruptType(this.msg.interrupt?.interrupt_value, 'product_selection');
   }
 
-  products(): any[] {
-    const val = this.msg.interrupt?.interrupt_value;
-    if (val?.['type'] === 'product_selection' && val?.['products']) {
-      return val['products'] as any[];
-    }
-    return [];
+  products(): Product[] {
+    return this.interrupt('product_selection')?.products ?? [];
   }
 
-  cartActions(): { id: string; label: string }[] {
-    const val = this.msg.interrupt?.interrupt_value;
-    if (val?.['type'] === 'cart_review' && val?.['actions']) {
-      return val['actions'] as { id: string; label: string }[];
-    }
-    return [];
+  cartActions(): ActionButton[] {
+    return this.interrupt('cart_review')?.actions ?? [];
   }
 
-  confirmActions(): { id: string; label: string }[] {
-    const val = this.msg.interrupt?.interrupt_value;
-    if (val?.['type'] === 'confirmation' && val?.['actions']) {
-      return val['actions'] as { id: string; label: string }[];
-    }
-    return [];
+  confirmActions(): ActionButton[] {
+    return this.interrupt('confirmation')?.actions ?? [];
   }
 
   isConfirmation(): boolean {
-    return this.msg.interrupt?.interrupt_value?.['type'] === 'confirmation';
+    return hasInterruptType(this.msg.interrupt?.interrupt_value, 'confirmation');
   }
 
   confirmProductsSummary(): string {
-    const val = this.msg.interrupt?.interrupt_value;
-    if (val?.['type'] !== 'confirmation') return '';
-    const summary = val['products_summary'];
-    return typeof summary === 'string' ? summary : '';
+    return this.interrupt('confirmation')?.products_summary ?? '';
   }
 
   confirmFormDataEntries(): { key: string; value: string }[] {
-    const val = this.msg.interrupt?.interrupt_value;
-    if (val?.['type'] !== 'confirmation') return [];
-    const data = val['form_data'];
+    const data = this.interrupt('confirmation')?.form_data;
     if (!data || typeof data !== 'object') return [];
-    return Object.entries(data as Record<string, unknown>).map(([key, value]) => ({
+    return Object.entries(data).map(([key, value]) => ({
       key,
       value:
         typeof value === 'string'
@@ -538,24 +537,22 @@ export class MessageComponent {
 
   selectFacet(value: string): void {
     this.resolved = true;
-    const facet = this.msg.interrupt?.interrupt_value?.['facet'] as string;
+    const facet = this.interrupt('facet_selection')?.facet ?? '';
     this.facetSelected.emit({ value, facet });
   }
 
-  isProductSelected(product: any): boolean {
+  isProductSelected(product: Product): boolean {
     return this.selectedProducts.some(
-      (p: any) => p.metadata?.id === product.metadata?.id
+      (p) => p.metadata?.id === product.metadata?.id,
     );
   }
 
-  toggleProduct(product: any): void {
+  toggleProduct(product: Product): void {
     const idx = this.selectedProducts.findIndex(
-      (p: any) => p.metadata?.id === product.metadata?.id
+      (p) => p.metadata?.id === product.metadata?.id,
     );
     if (idx >= 0) {
-      this.selectedProducts = this.selectedProducts.filter(
-        (_, i) => i !== idx
-      );
+      this.selectedProducts = this.selectedProducts.filter((_, i) => i !== idx);
     } else {
       this.selectedProducts = [...this.selectedProducts, product];
     }

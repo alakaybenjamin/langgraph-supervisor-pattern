@@ -14,6 +14,7 @@ called with the current question. If the bug is still present, it's called
 with a stale one.
 """
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -21,7 +22,14 @@ from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
+
+def _ainvoke(graph: Any, payload: Any, cfg: dict) -> Any:
+    """Run ``graph.ainvoke`` in a fresh event loop (subgraph nodes are async)."""
+    return asyncio.run(graph.ainvoke(payload, cfg))
+
 import app.graph.router_logic as _router_logic
+import app.graph.subgraphs.request_access.nodes.extract_search_intent as _extract_mod
+import app.graph.subgraphs.request_access.nodes.mcp_prefetch as _prefetch_mod
 import app.graph.subgraphs.request_access.nodes.steps as _steps_mod
 from app.graph.faq_agents import _extract_question, faq_kb_agent, general_faq_tavily_agent
 from app.graph.parent_supervisor import recover_state_node, supervisor_router
@@ -37,9 +45,14 @@ from langgraph.types import Command
 
 
 def _ai_with_tool(name: str, args: dict[str, Any]) -> AIMessage:
+    # The routers now require a ``confidence`` arg on every tool call. For
+    # simulation purposes we always report high confidence so the router
+    # dispatches instead of asking for clarification.
+    args_with_conf = {**args}
+    args_with_conf.setdefault("confidence", 0.95)
     return AIMessage(
         content="",
-        tool_calls=[{"name": name, "args": args, "id": f"tc_{name}"}],
+        tool_calls=[{"name": name, "args": args_with_conf, "id": f"tc_{name}"}],
     )
 
 
@@ -92,18 +105,33 @@ def _patch_products_search() -> None:
     global _PATCHED
     if _PATCHED:
         return
-    _steps_mod.build_search_products_query = lambda **_: [  # type: ignore[assignment]
-        {
-            "content": "Mock product",
-            "metadata": {
-                "id": "dp-mock",
-                "domain": "commercial",
-                "product_type": "default",
-                "sensitivity": "low",
-            },
-            "score": 1.0,
-        }
-    ]
+
+    async def _fake_search(**_: Any) -> list[dict]:
+        return [
+            {
+                "content": "Mock product",
+                "metadata": {
+                    "id": "dp-mock",
+                    "domain": "commercial",
+                    "product_type": "default",
+                    "sensitivity": "low",
+                },
+                "score": 1.0,
+            }
+        ]
+
+    _steps_mod.build_search_products_query = _fake_search  # type: ignore[assignment]
+
+    _extract_mod.extract_search_intent = lambda text: {  # type: ignore[assignment]
+        "search_text": (text or "").strip() or "*",
+        "study_id": "",
+    }
+
+    async def _no_facets() -> dict:
+        return {}
+
+    _prefetch_mod.mcp_search_client.list_facets = _no_facets  # type: ignore[attr-defined]
+
     _PATCHED = True
 
 
@@ -226,7 +254,7 @@ def test_faq_after_resume_uses_current_question_not_previous() -> None:
     cfg = {"configurable": {"thread_id": "sim-faq-1"}}
 
     # Fresh start
-    g.invoke(
+    _ainvoke(g, 
         {
             "messages": [],
             "thread_id": "sim-faq-1",
@@ -240,8 +268,8 @@ def test_faq_after_resume_uses_current_question_not_previous() -> None:
     assert _pending_interrupt(g, cfg) is not None
 
     # Structured resumes past domain + anonymization (no LLM)
-    g.invoke(Command(resume={"facet": "domain", "value": "commercial"}), cfg)
-    g.invoke(Command(resume={"facet": "anonymization", "value": "deidentified"}), cfg)
+    _ainvoke(g, Command(resume={"facet": "domain", "value": "commercial"}), cfg)
+    _ainvoke(g, Command(resume={"facet": "anonymization", "value": "deidentified"}), cfg)
 
     # Paused on choose_products now
     val = _pending_interrupt(g, cfg)
@@ -249,14 +277,14 @@ def test_faq_after_resume_uses_current_question_not_previous() -> None:
     assert val["type"] == "product_selection"
 
     # Step 5: "lets continue" -> resume_workflow -> redisplays choose_products
-    g.invoke(Command(resume={"action": "user_message", "text": "lets continue"}), cfg)
+    _ainvoke(g, Command(resume={"action": "user_message", "text": "lets continue"}), cfg)
     # Still paused on choose_products after resume_workflow
     val = _pending_interrupt(g, cfg)
     assert val is not None
     assert val["type"] == "product_selection"
 
     # Step 6: the actual FAQ question
-    g.invoke(
+    _ainvoke(g, 
         Command(
             resume={
                 "action": "user_message",
@@ -302,7 +330,7 @@ def test_extract_question_from_live_state_after_handoff() -> None:
     g = _build_full_graph(faq_spy=_spy)
 
     cfg = {"configurable": {"thread_id": "sim-faq-2"}}
-    g.invoke(
+    _ainvoke(g, 
         {
             "messages": [],
             "thread_id": "sim-faq-2",
@@ -312,10 +340,10 @@ def test_extract_question_from_live_state_after_handoff() -> None:
         },
         cfg,
     )
-    g.invoke(Command(resume={"facet": "domain", "value": "commercial"}), cfg)
-    g.invoke(Command(resume={"facet": "anonymization", "value": "deidentified"}), cfg)
-    g.invoke(Command(resume={"action": "user_message", "text": "lets continue"}), cfg)
-    g.invoke(
+    _ainvoke(g, Command(resume={"facet": "domain", "value": "commercial"}), cfg)
+    _ainvoke(g, Command(resume={"facet": "anonymization", "value": "deidentified"}), cfg)
+    _ainvoke(g, Command(resume={"action": "user_message", "text": "lets continue"}), cfg)
+    _ainvoke(g, 
         Command(
             resume={
                 "action": "user_message",

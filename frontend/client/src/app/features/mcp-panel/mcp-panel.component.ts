@@ -10,6 +10,7 @@ import {
 import { CommonModule } from '@angular/common';
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { ChatService } from '../../core/services/chat.service';
+import { asInterrupt } from '../../core/models/chat.model';
 import { McpService } from '../../core/services/mcp.service';
 
 @Component({
@@ -134,7 +135,8 @@ import { McpService } from '../../core/services/mcp.service';
   ],
 })
 export class McpPanelComponent implements OnDestroy {
-  chatService = inject(ChatService);
+  private chatService = inject(ChatService);
+  readonly stream = this.chatService.stream;
   mcpService = inject(McpService);
   private sanitizer = inject(DomSanitizer);
 
@@ -154,11 +156,11 @@ export class McpPanelComponent implements OnDestroy {
     window.addEventListener('message', this.messageHandler);
 
     effect(() => {
-      const interrupt = this.chatService.currentInterrupt();
-      if (interrupt?.interrupt) {
-        const val = interrupt.interrupt.interrupt_value;
-        if (val?.['type'] === 'mcp_app') {
-          this.openMcpApp(val as Record<string, unknown>);
+      const interrupt = this.stream.currentInterrupt();
+      if (interrupt) {
+        const mcp = asInterrupt(interrupt.interrupt_value, 'mcp_app');
+        if (mcp) {
+          this.openMcpApp({ ...mcp });
         } else {
           this.isOpen.set(false);
         }
@@ -217,7 +219,7 @@ export class McpPanelComponent implements OnDestroy {
   }
 
   addMoreProducts(): void {
-    this.chatService.resumeWithData({ action: 'add_more' });
+    this.stream.submit({ resume: { action: 'add_more' } });
     this.close();
   }
 
@@ -427,17 +429,19 @@ export class McpPanelComponent implements OnDestroy {
       try {
         const parsed = JSON.parse(text);
         if (parsed.action === 'select_products') {
-          this.chatService.resumeWithData({
-            selected_products: parsed.selected_products,
+          this.stream.submit({
+            resume: { selected_products: parsed.selected_products },
           });
           this.close();
           return;
         }
       } catch {}
-      this.chatService.resumeWithData({ cancelled: true });
+      this.stream.submit({ resume: { cancelled: true } });
       this.close();
     } else {
-      this.chatService.resumeWithData({ form_data: text, submitted: true });
+      this.stream.submit({
+        resume: { form_data: text, submitted: true },
+      });
       this.close();
     }
   }

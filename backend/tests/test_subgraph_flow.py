@@ -8,6 +8,7 @@ No database, LLM, or ChromaDB dependencies: ``search_products`` is patched to
 return a small fixed product list so we don't hit OpenAI embeddings.
 """
 
+import asyncio
 from typing import Any
 
 from langchain_core.messages import AIMessage
@@ -15,7 +16,20 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
 
+
+def _ainvoke(graph: Any, payload: Any, cfg: dict) -> Any:
+    """Synchronous shim around ``graph.ainvoke`` for tests.
+
+    Subgraph nodes like ``search_products`` and ``mcp_prefetch_facets`` are
+    async (they call the MCP client), so LangGraph rejects the sync
+    ``.invoke`` path. Each call runs in a fresh event loop to match the
+    isolation of the previous sync tests.
+    """
+    return asyncio.run(graph.ainvoke(payload, cfg))
+
 import app.graph.router_logic as _router_logic
+import app.graph.subgraphs.request_access.nodes.extract_search_intent as _extract_mod
+import app.graph.subgraphs.request_access.nodes.mcp_prefetch as _prefetch_mod
 import app.graph.subgraphs.request_access.nodes.steps as _steps_mod
 from app.graph.subgraphs.request_access import build_request_access_subgraph
 from app.graph.state import AppState, RA_STEP_CHOOSE_DOMAIN
@@ -46,8 +60,13 @@ class _StubWorkflowLLM:
                 break
         for needle, call in self._MAPPING:
             if needle in text:
+                # The router now requires ``confidence`` on every tool call.
+                # Inject a high value so dispatching happens instead of
+                # clarify.
+                args = {**call["args"]}
+                args.setdefault("confidence", 0.95)
                 return _stub_ai_message(
-                    tool_calls=[{"name": call["name"], "args": call["args"], "id": "tc"}]
+                    tool_calls=[{"name": call["name"], "args": args, "id": "tc"}]
                 )
         return _stub_ai_message()
 
@@ -68,18 +87,36 @@ def _patch_search() -> None:
     global _PATCHED
     if _PATCHED:
         return
-    _steps_mod.build_search_products_query = lambda **_: [  # type: ignore[assignment]
-        {
-            "content": "Mock product for tests",
-            "metadata": {
-                "id": "dp-mock",
-                "domain": "commercial",
-                "product_type": "default",
-                "sensitivity": "low",
-            },
-            "score": 1.0,
-        }
-    ]
+
+    async def _fake_search(**_: Any) -> list[dict]:
+        return [
+            {
+                "content": "Mock product for tests",
+                "metadata": {
+                    "id": "dp-mock",
+                    "domain": "commercial",
+                    "product_type": "default",
+                    "sensitivity": "low",
+                },
+                "score": 1.0,
+            }
+        ]
+
+    _steps_mod.build_search_products_query = _fake_search  # type: ignore[assignment]
+
+    # Patch the LLM-based intent extractor to a deterministic pass-through.
+    _extract_mod.extract_search_intent = lambda text: {  # type: ignore[assignment]
+        "search_text": (text or "").strip() or "*",
+        "study_id": "",
+    }
+
+    # Patch MCP facet prefetch to return nothing so the node skips writing
+    # to state and downstream chips fall through to the hardcoded defaults.
+    async def _no_facets() -> dict:
+        return {}
+
+    _prefetch_mod.mcp_search_client.list_facets = _no_facets  # type: ignore[attr-defined]
+
     _PATCHED = True
 
 
@@ -153,7 +190,7 @@ def _pending_interrupt(graph: Any, cfg: dict) -> dict | None:
 def test_first_turn_interrupts_on_choose_domain() -> None:
     g = _parent_graph()
     cfg = {"configurable": {"thread_id": "t1"}}
-    g.invoke({"messages": [], "thread_id": "t1", "user_id": "u"}, cfg)
+    _ainvoke(g, {"messages": [], "thread_id": "t1", "user_id": "u"}, cfg)
 
     val = _pending_interrupt(g, cfg)
     assert val is not None
@@ -165,8 +202,8 @@ def test_first_turn_interrupts_on_choose_domain() -> None:
 def test_resume_with_facet_answer_advances_to_anonymization() -> None:
     g = _parent_graph()
     cfg = {"configurable": {"thread_id": "t2"}}
-    g.invoke({"messages": [], "thread_id": "t2", "user_id": "u"}, cfg)
-    g.invoke(Command(resume={"facet": "domain", "value": "commercial"}), cfg)
+    _ainvoke(g, {"messages": [], "thread_id": "t2", "user_id": "u"}, cfg)
+    _ainvoke(g, Command(resume={"facet": "domain", "value": "commercial"}), cfg)
 
     sv = _subgraph_values(g, cfg)
     assert sv.get("selected_domains") == ["commercial"]
@@ -179,9 +216,9 @@ def test_resume_with_facet_answer_advances_to_anonymization() -> None:
 def test_resume_past_anonymization_runs_search_and_pauses_on_products() -> None:
     g = _parent_graph()
     cfg = {"configurable": {"thread_id": "t3"}}
-    g.invoke({"messages": [], "thread_id": "t3", "user_id": "u"}, cfg)
-    g.invoke(Command(resume={"facet": "domain", "value": "commercial"}), cfg)
-    g.invoke(Command(resume={"facet": "anonymization", "value": "deidentified"}), cfg)
+    _ainvoke(g, {"messages": [], "thread_id": "t3", "user_id": "u"}, cfg)
+    _ainvoke(g, Command(resume={"facet": "domain", "value": "commercial"}), cfg)
+    _ainvoke(g, Command(resume={"facet": "anonymization", "value": "deidentified"}), cfg)
 
     sv = _subgraph_values(g, cfg)
     assert sv.get("selected_anonymization") == "deidentified"
@@ -195,15 +232,15 @@ def test_resume_past_anonymization_runs_search_and_pauses_on_products() -> None:
 def test_navigation_clears_downstream_state() -> None:
     g = _parent_graph()
     cfg = {"configurable": {"thread_id": "t4"}}
-    g.invoke({"messages": [], "thread_id": "t4", "user_id": "u"}, cfg)
-    g.invoke(Command(resume={"facet": "domain", "value": "commercial"}), cfg)
-    g.invoke(Command(resume={"facet": "anonymization", "value": "deidentified"}), cfg)
+    _ainvoke(g, {"messages": [], "thread_id": "t4", "user_id": "u"}, cfg)
+    _ainvoke(g, Command(resume={"facet": "domain", "value": "commercial"}), cfg)
+    _ainvoke(g, Command(resume={"facet": "anonymization", "value": "deidentified"}), cfg)
 
     before = _subgraph_values(g, cfg)
     assert before.get("selected_anonymization") == "deidentified"
     assert before.get("product_search_results")
 
-    g.invoke(
+    _ainvoke(g, 
         Command(resume={"action": "user_message", "text": "change domain"}),
         cfg,
     )
@@ -221,10 +258,10 @@ def test_navigation_clears_downstream_state() -> None:
 def test_user_text_side_message_keeps_workflow_paused() -> None:
     g = _parent_graph()
     cfg = {"configurable": {"thread_id": "t6"}}
-    g.invoke({"messages": [], "thread_id": "t6", "user_id": "u"}, cfg)
+    _ainvoke(g, {"messages": [], "thread_id": "t6", "user_id": "u"}, cfg)
 
     # Send plain chat text while paused on choose_domain.
-    g.invoke(
+    _ainvoke(g, 
         Command(resume={"action": "user_message", "text": "hello there"}),
         cfg,
     )
@@ -246,11 +283,12 @@ def test_user_text_side_message_keeps_workflow_paused() -> None:
 def test_faq_handoff_preserves_workflow_state() -> None:
     g = _parent_graph()
     cfg = {"configurable": {"thread_id": "t5"}}
-    g.invoke({"messages": [], "thread_id": "t5", "user_id": "u"}, cfg)
-    g.invoke(Command(resume={"facet": "domain", "value": "commercial"}), cfg)
+    _ainvoke(g, {"messages": [], "thread_id": "t5", "user_id": "u"}, cfg)
+    _ainvoke(g, Command(resume={"facet": "domain", "value": "commercial"}), cfg)
 
-    result = g.invoke(
-        Command(resume={"action": "user_message", "text": "What is the IHD process?"}),
+    result = _ainvoke(
+        g,
+                Command(resume={"action": "user_message", "text": "What is the IHD process?"}),
         cfg,
     )
 

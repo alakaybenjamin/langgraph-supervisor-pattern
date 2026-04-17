@@ -42,8 +42,22 @@ class AppState(TypedDict):
     invalidated_from_step: NotRequired[str | None]
     last_resume_value: NotRequired[Any]
     ra_search_query: NotRequired[str]
+    ra_study_id: NotRequired[str]
     submit_confirmed: NotRequired[bool]
     last_request_id: NotRequired[str]
+
+    # Canonical facet chips fetched from the MCP search server
+    # (``{"domains": [...], "anonymization": [...]}``). Populated once per
+    # subgraph entry by the ``mcp_prefetch_facets`` node and read by
+    # ``choose_domain`` / ``choose_anonymization`` when rendering chips.
+    mcp_facet_cache: NotRequired[dict]
+
+    # Supervisor clarification follow-up: set when the supervisor emitted a
+    # "Did you mean…?" reply. On the next turn, if the user affirms (yes /
+    # correct / …), the supervisor dispatches to the saved candidate intent
+    # without re-running the classifier. If the user negates or rephrases,
+    # this field is cleared.
+    pending_clarification: NotRequired[dict | None]
 
 
 # ---------------------------------------------------------------------------

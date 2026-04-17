@@ -1,14 +1,32 @@
+"""@file helpers.py
+@brief Shared helpers for the request-access LangGraph subgraph.
+
+Pure utilities for search, product normalization, and interrupt payloads sent
+to the chat UI. No graph nodes live here.
+
+@section request_access_helpers_constants Module constants
+- DOMAIN_OPTIONS, PRODUCT_TYPE_OPTIONS, ANONYMIZATION_OPTIONS — facet chip lists.
+- CART_ACTIONS, CART_ACTIONS_READONLY — cart step button definitions.
+- SEARCH_APP_PAYLOAD, QUESTION_FORM_PAYLOAD — MCP App interrupt templates.
+"""
+
 from __future__ import annotations
 
 import logging
 import uuid
 from typing import Any
 
-from app.service.search_service import SearchService
+from app.graph.subgraphs.request_access.prompts import (
+    FORM_SECTION_TITLE_TEMPLATE,
+)
+from app.service import mcp_search_client
 
 logger = logging.getLogger(__name__)
 
-_search_service: SearchService | None = None
+# Fallback facet chips — used only when the MCP server is unreachable or has
+# not been pre-fetched yet. The MCP server is the source of truth: when its
+# ``list_facets`` response is cached in ``state.mcp_facet_cache`` these lists
+# are ignored.
 
 DOMAIN_OPTIONS: list[dict[str, str]] = [
     {"id": "commercial", "label": "Commercial"},
@@ -63,20 +81,28 @@ QUESTION_FORM_PAYLOAD: dict[str, Any] = {
 }
 
 
-def get_search_service() -> SearchService:
-    global _search_service
-    if _search_service is None:
-        _search_service = SearchService()
-    return _search_service
-
-
 def as_str(value: Any, default: str = "") -> str:
+    """@brief Coerce a value to str, or return default when None.
+
+    @param value   Arbitrary value (often from resume payloads).
+    @param default String used when value is None.
+    @return        str(value) or default.
+    """
     if value is None:
         return default
     return str(value)
 
 
 def normalize_product(product: Any) -> dict[str, Any]:
+    """@brief Normalize a search hit or ad-hoc dict into the product shape.
+
+    Ensures keys ``content``, ``metadata`` (id, product_type, domain,
+    sensitivity), and ``score`` exist for the product-selection UI.
+
+    @param product Dict from the MCP search server or a loose structure; non-dicts are
+                   wrapped as synthetic entries.
+    @return        Dict with keys ``content``, ``metadata``, ``score``.
+    """
     if not isinstance(product, dict):
         return {
             "content": as_str(product),
@@ -136,6 +162,11 @@ def normalize_product(product: Any) -> dict[str, Any]:
 
 
 def normalize_products(products: Any) -> list[dict[str, Any]]:
+    """@brief Map a list of products through normalize_product.
+
+    @param products List of product dicts; non-lists yield an empty list.
+    @return         List of normalized product dicts.
+    """
     if not isinstance(products, list):
         return []
     return [normalize_product(p) for p in products]
@@ -150,18 +181,37 @@ def canonicalize_ui_payload(
     allow_search: bool,
     allow_multi_select: bool,
 ) -> tuple[list[dict] | None, list[dict] | None, bool, bool]:
+    """@brief Apply built-in option/action defaults for known UI types.
+
+    For ``facet_selection``, replaces options with DOMAIN_OPTIONS,
+    PRODUCT_TYPE_OPTIONS, or ANONYMIZATION_OPTIONS by facet. For
+    ``cart_review``, uses CART_ACTIONS. For ``product_selection``, forces
+    search and multi-select flags on.
+
+    @param ui_type              Interrupt payload type (e.g. facet_selection).
+    @param facet                Facet id when ui_type is facet_selection.
+    @param options              Caller-provided options; may be overridden.
+    @param actions              Caller-provided actions; may be overridden.
+    @param allow_search         Initial allow_search flag.
+    @param allow_multi_select   Initial allow_multi_select flag.
+    @return Tuple ``(options, actions, allow_search, allow_multi_select)``.
+    """
     canonical_options = options
     canonical_actions = actions
     canonical_allow_search = allow_search
     canonical_allow_multi_select = allow_multi_select
 
     if ui_type == "facet_selection":
-        if facet == "domain":
-            canonical_options = DOMAIN_OPTIONS
-        elif facet == "product_type":
-            canonical_options = PRODUCT_TYPE_OPTIONS
-        elif facet == "anonymization":
-            canonical_options = ANONYMIZATION_OPTIONS
+        # Caller-provided options (typically sourced from
+        # ``state.mcp_facet_cache``) take precedence. Fall back to the
+        # hardcoded defaults only if the caller passed nothing.
+        if canonical_options is None:
+            if facet == "domain":
+                canonical_options = DOMAIN_OPTIONS
+            elif facet == "product_type":
+                canonical_options = PRODUCT_TYPE_OPTIONS
+            elif facet == "anonymization":
+                canonical_options = ANONYMIZATION_OPTIONS
     elif ui_type == "cart_review":
         canonical_actions = CART_ACTIONS
     elif ui_type == "product_selection":
@@ -176,22 +226,76 @@ def canonicalize_ui_payload(
     )
 
 
-def build_search_products_query(
+async def build_search_products_query(
     *,
     query: str,
-    domain: str,
-    product_type: str,
+    domains: list[str] | None = None,
+    anonymization: str | None = None,
+    study_id: str | None = None,
     k: int = 8,
 ) -> list[dict]:
-    svc = get_search_service()
-    results = svc.search_with_filters(
-        query=query, domain=domain, product_type=product_type, k=k,
+    """@brief Run product search via the MCP search-app server.
+
+    Thin adapter over :func:`app.service.mcp_search_client.search`. Filters
+    with empty / ``"all"`` values are dropped before the MCP call so the
+    server treats them as "no filter".
+
+    @param query         Free-text search string; ``'*'`` or empty matches all.
+    @param domains       Multi-select domain ids; ``None`` / ``[]`` skips.
+    @param anonymization Anonymization level id (e.g. ``deidentified``); None skips.
+    @param study_id      Clinical study id substring; None / empty skips.
+    @param k             Maximum hits to return (client-side cap).
+    @return              List of raw product dicts from the MCP server.
+    """
+    results = await mcp_search_client.search(
+        search_text=(query or "").strip() or "*",
+        domains=list(domains or []),
+        anonymization=(anonymization or None),
+        study_id=(study_id or None),
     )
+    if k and len(results) > k:
+        results = results[:k]
     logger.info(
-        "search_products: query=%r domain=%s type=%s -> %d results",
-        query, domain, product_type, len(results),
+        "search_products: query=%r domains=%s anon=%s study_id=%s -> %d results",
+        query, domains, anonymization, study_id, len(results),
     )
     return results
+
+
+def facet_options_from_cache(
+    state: dict | None, facet: str
+) -> list[dict] | None:
+    """@brief Pull MCP-sourced facet options for a given facet id.
+
+    Reads from the ``mcp_facet_cache`` field that ``mcp_prefetch_facets``
+    populates. Returns ``None`` when the cache is missing or the facet is
+    not present — callers should fall through to the hardcoded defaults.
+
+    @param state  The current AppState (or any dict exposing mcp_facet_cache).
+    @param facet  Facet id, e.g. ``"domain"`` or ``"anonymization"``.
+    @return       List of ``{"id", "label"}`` dicts or ``None``.
+    """
+    if not isinstance(state, dict):
+        return None
+    cache = state.get("mcp_facet_cache") or {}
+    if not isinstance(cache, dict):
+        return None
+    # MCP server keys: "domains" (plural) and "anonymization" (singular)
+    key_map = {"domain": "domains", "anonymization": "anonymization"}
+    key = key_map.get(facet)
+    if not key:
+        return None
+    options = cache.get(key)
+    if not isinstance(options, list) or not options:
+        return None
+    # Accept both already-shaped ``{"id","label"}`` and legacy shapes.
+    normalized: list[dict] = []
+    for opt in options:
+        if isinstance(opt, dict) and "id" in opt:
+            normalized.append(
+                {"id": str(opt["id"]), "label": str(opt.get("label", opt["id"]))}
+            )
+    return normalized or None
 
 
 def build_emit_ui_payload(
@@ -207,6 +311,23 @@ def build_emit_ui_payload(
     step: str = "",
     prompt_id: str | None = None,
 ) -> dict[str, Any]:
+    """@brief Build a structured interrupt payload for the chat frontend.
+
+    Merges canonical options/actions via canonicalize_ui_payload, assigns a
+    stable prompt_id when omitted, and normalizes any product list.
+
+    @param ui_type             Payload type (facet_selection, product_selection, etc.).
+    @param message             Human-readable prompt shown above the UI.
+    @param options             Selectable chips; may be replaced per ui_type/facet.
+    @param products            Optional product cards (normalized in output).
+    @param actions             Button definitions; may be replaced for cart_review.
+    @param facet               Facet id for facet_selection UIs.
+    @param allow_search        Whether to expose product search in UI.
+    @param allow_multi_select  Whether multi-select is allowed.
+    @param step                Workflow step id (RA_STEP_*).
+    @param prompt_id           Stable id for resume correlation; UUID if omitted.
+    @return                    Dict suitable for interrupt() / pending_prompt.
+    """
     (
         options,
         actions,
@@ -245,7 +366,11 @@ def build_emit_ui_payload(
 def merge_form_schema_for_products(
     products: list[dict],
 ) -> list[dict]:
-    """Minimal placeholder schema per product id for the dynamic form step."""
+    """@brief Build a minimal per-product form schema for the fill_form step.
+
+    @param products  Normalized product dicts (metadata.id used as product_id).
+    @return          List of schema dicts with product_id, title, and fields.
+    """
     schema: list[dict] = []
     for p in products:
         meta = p.get("metadata", {}) if isinstance(p, dict) else {}
@@ -253,7 +378,7 @@ def merge_form_schema_for_products(
         schema.append(
             {
                 "product_id": pid,
-                "title": f"Access request — {pid}",
+                "title": FORM_SECTION_TITLE_TEMPLATE.format(product_id=pid),
                 "fields": [
                     {"name": "business_justification", "label": "Business justification", "type": "textarea"},
                     {"name": "data_scope", "label": "Intended data use", "type": "text"},

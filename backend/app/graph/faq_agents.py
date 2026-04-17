@@ -19,6 +19,12 @@ import logging
 from langchain_core.messages import AIMessage
 
 from app.core.llm import get_chat_llm
+from app.graph.prompts import (
+    FAQ_KB_SYSTEM_PROMPT,
+    FAQ_PAUSED_WORKFLOW_SUFFIX_TEMPLATE,
+    FAQ_USER_PROMPT_TEMPLATE,
+    GENERAL_FAQ_SYSTEM_PROMPT,
+)
 from app.graph.router_logic import last_human_message
 from app.graph.state import AppState
 
@@ -36,9 +42,10 @@ def _faq_service():
 _FAQ_TOOL_NAMES = {
     # Parent supervisor fresh-turn classifier
     "faq_kb_question",
-    "general_web_question",
     # Subgraph workflow-text classifier
     "ask_faq_kb",
+    # Legacy names retained for defensive extraction on old checkpoints.
+    "general_web_question",
     "ask_general_web",
 }
 
@@ -86,7 +93,12 @@ def _synthesize(question: str, context: str, *, system_prompt: str) -> str:
     llm = get_chat_llm()
     prompt = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Question: {question}\n\nSearch results:\n{context}"},
+        {
+            "role": "user",
+            "content": FAQ_USER_PROMPT_TEMPLATE.format(
+                question=question, context=context
+            ),
+        },
     ]
     return llm.invoke(prompt).content or ""
 
@@ -102,22 +114,14 @@ def faq_kb_agent(state: AppState) -> dict:
         f"Source: {r.get('url', 'N/A')}\n{r.get('content', '')}" for r in results
     )
 
-    system_prompt = (
-        "You are a Data Governance / IHD knowledge-base assistant. "
-        "Answer the user's question concisely using the search results below. "
-        "If the results don't cover the question, say so honestly and suggest "
-        "where to look. Keep the answer short (3-8 sentences) and professional. "
-        "The user may be in the middle of a data access request — do NOT tell "
-        "them to abandon or restart it; their workflow stays paused."
-    )
-
-    answer = _synthesize(question, context, system_prompt=system_prompt)
+    answer = _synthesize(question, context, system_prompt=FAQ_KB_SYSTEM_PROMPT)
 
     update: dict = {"messages": [AIMessage(content=answer)], "mode": "faq"}
     summary = state.get("paused_workflow_summary") or ""
     if state.get("active_flow") == "request_access" and state.get("awaiting_input") and summary:
         update["messages"][0] = AIMessage(
-            content=answer + f"\n\n_Your access request is still paused: {summary}_"
+            content=answer
+            + FAQ_PAUSED_WORKFLOW_SUFFIX_TEMPLATE.format(summary=summary)
         )
     return update
 
@@ -133,11 +137,7 @@ def general_faq_tavily_agent(state: AppState) -> dict:
         f"Source: {r.get('url', 'N/A')}\n{r.get('content', '')}" for r in results
     )
 
-    system_prompt = (
-        "You are a concise general-knowledge assistant. Use the web search "
-        "results to answer the user's question in 3-8 sentences. If the "
-        "results don't answer it, say so. Do not speculate. Do not change "
-        "the user's in-progress data access request, if any."
+    answer = _synthesize(
+        question, context, system_prompt=GENERAL_FAQ_SYSTEM_PROMPT
     )
-    answer = _synthesize(question, context, system_prompt=system_prompt)
     return {"messages": [AIMessage(content=answer)], "mode": "faq"}
