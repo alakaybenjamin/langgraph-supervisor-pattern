@@ -1,8 +1,21 @@
 """
 Python MCP App Server for Data Product Search.
 
-Provides an interactive search UI with faceted filtering,
-free-text search, and multi-select capabilities.
+This server exposes three MCP tools:
+
+1. ``search-data-products`` *(UI-backed)* — opens the interactive search iframe
+   with pre-applied filters. Kept for the in-chat MCP App experience.
+2. ``search`` *(headless)* — backend-callable search that takes a free-text
+   query plus an optional ``filters`` object (multi-select ``domains``, single
+   ``anonymization`` level, and an optional free-text ``study_id``). Returns
+   the result list in ``structuredContent`` — no UI involved.
+3. ``list_facets`` *(headless)* — returns the canonical facet chips
+   (``domains`` and ``anonymization``) so callers can render filter UIs with
+   labels that match this server's expected input-value ids.
+
+Treat this server as a third-party data catalog: the request-access workflow
+in the main app only talks to it over MCP and has no access to the underlying
+storage.
 
 Usage:
     python server.py             # HTTP on port 3002
@@ -28,6 +41,8 @@ SAMPLE_PRODUCTS = [
         "domain": "r_and_d",
         "product_type": "default",
         "sensitivity": "high",
+        "anonymization": "deidentified",
+        "study_id": "STU-203121",
         "owner": "Clinical Data Management",
     },
     {
@@ -37,6 +52,8 @@ SAMPLE_PRODUCTS = [
         "domain": "r_and_d",
         "product_type": "ddf",
         "sensitivity": "critical",
+        "anonymization": "limited",
+        "study_id": "STU-203121",
         "owner": "Clinical Data Management",
     },
     {
@@ -46,6 +63,8 @@ SAMPLE_PRODUCTS = [
         "domain": "commercial",
         "product_type": "default",
         "sensitivity": "medium",
+        "anonymization": "identified",
+        "study_id": None,
         "owner": "Commercial Analytics",
     },
     {
@@ -55,6 +74,8 @@ SAMPLE_PRODUCTS = [
         "domain": "safety",
         "product_type": "ddf",
         "sensitivity": "critical",
+        "anonymization": "limited",
+        "study_id": "STU-401052",
         "owner": "Pharmacovigilance",
     },
     {
@@ -64,6 +85,8 @@ SAMPLE_PRODUCTS = [
         "domain": "operations",
         "product_type": "onyx",
         "sensitivity": "medium",
+        "anonymization": "identified",
+        "study_id": None,
         "owner": "Quality Assurance",
     },
     {
@@ -73,6 +96,8 @@ SAMPLE_PRODUCTS = [
         "domain": "r_and_d",
         "product_type": "ddf",
         "sensitivity": "critical",
+        "anonymization": "deidentified",
+        "study_id": "STU-558970",
         "owner": "RWE Analytics",
     },
     {
@@ -82,6 +107,8 @@ SAMPLE_PRODUCTS = [
         "domain": "regulatory",
         "product_type": "default",
         "sensitivity": "high",
+        "anonymization": "identified",
+        "study_id": None,
         "owner": "Regulatory Affairs",
     },
     {
@@ -91,6 +118,8 @@ SAMPLE_PRODUCTS = [
         "domain": "commercial",
         "product_type": "default",
         "sensitivity": "medium",
+        "anonymization": "limited",
+        "study_id": None,
         "owner": "Market Access Team",
     },
     {
@@ -100,6 +129,8 @@ SAMPLE_PRODUCTS = [
         "domain": "r_and_d",
         "product_type": "ddf",
         "sensitivity": "critical",
+        "anonymization": "deidentified",
+        "study_id": "STU-203121",
         "owner": "Genomics Lab",
     },
     {
@@ -109,8 +140,17 @@ SAMPLE_PRODUCTS = [
         "domain": "hr",
         "product_type": "default",
         "sensitivity": "high",
+        "anonymization": "limited",
+        "study_id": None,
         "owner": "People Analytics",
     },
+]
+
+
+ANONYMIZATION_FACET: list[dict[str, str]] = [
+    {"id": "identified", "label": "Identified (standard access)"},
+    {"id": "limited", "label": "Limited / aggregated"},
+    {"id": "deidentified", "label": "De-identified only"},
 ]
 
 
@@ -137,6 +177,11 @@ def _search_products(
     product_type: str = "all",
     sensitivity: str = "all",
 ) -> list[dict]:
+    """Legacy search used by the UI-backed ``search-data-products`` tool.
+
+    Signature preserved for the existing in-chat search iframe (which expects
+    single-select ``domain``/``product_type``/``sensitivity`` strings).
+    """
     results = SAMPLE_PRODUCTS[:]
     if domain and domain != "all":
         results = [p for p in results if p["domain"] == domain]
@@ -155,12 +200,80 @@ def _search_products(
     return results
 
 
+# ---------------------------------------------------------------------------
+# Headless search (backend / LangGraph-callable)
+# ---------------------------------------------------------------------------
+
+
+def _list_facets() -> dict:
+    """Return canonical facet chips for the headless ``search`` tool."""
+    domains = sorted({p["domain"] for p in SAMPLE_PRODUCTS})
+    return {
+        "domains": [
+            {"id": d, "label": d.replace("_", " ").title()} for d in domains
+        ],
+        "anonymization": list(ANONYMIZATION_FACET),
+    }
+
+
+def _search(
+    search_text: str = "*",
+    filters: dict | None = None,
+) -> list[dict]:
+    """Headless search used by the ``search`` MCP tool.
+
+    :param search_text: Free-text query. Use ``"*"`` (or empty) to match all
+        products. Matched case-insensitively against title, description, id.
+    :param filters: Optional dict with any subset of::
+
+        {
+            "domains":       list[str]  # multi-select; empty = no filter
+            "anonymization": str        # enum; empty = no filter
+            "study_id":      str        # substring match; empty = no filter
+        }
+
+    :returns: List of product dicts matching every provided filter.
+    """
+    filters = filters or {}
+    domains = [
+        d for d in (filters.get("domains") or []) if d and d != "all"
+    ]
+    anonymization = (filters.get("anonymization") or "").strip()
+    study_id = (filters.get("study_id") or "").strip()
+
+    results = list(SAMPLE_PRODUCTS)
+    if domains:
+        results = [p for p in results if p.get("domain") in domains]
+    if anonymization:
+        results = [p for p in results if p.get("anonymization") == anonymization]
+    if study_id:
+        sid = study_id.lower()
+        results = [
+            p for p in results if sid in (p.get("study_id") or "").lower()
+        ]
+
+    q = (search_text or "").strip()
+    if q and q != "*":
+        ql = q.lower()
+        results = [
+            p for p in results
+            if ql in p.get("title", "").lower()
+            or ql in p.get("description", "").lower()
+            or ql in p.get("id", "").lower()
+        ]
+    return results
+
+
 def create_server() -> Server:
     server = Server("Search App Server")
 
     @server.list_tools()
     async def handle_list_tools() -> list[types.Tool]:
-        tool = types.Tool.model_validate(
+        facets = _list_facets()
+        domain_ids = [d["id"] for d in facets["domains"]]
+        anonymization_ids = [a["id"] for a in facets["anonymization"]]
+
+        ui_tool = types.Tool.model_validate(
             {
                 "name": "search-data-products",
                 "description": (
@@ -188,44 +301,165 @@ def create_server() -> Server:
                 },
             }
         )
-        return [tool]
+
+        search_tool = types.Tool.model_validate(
+            {
+                "name": "search",
+                "description": (
+                    "Headless search for data products. Returns products matching "
+                    "a free-text query and optional filters. Intended for backend / "
+                    "LangGraph callers that already have filter values — no UI is "
+                    "opened. Pass ``search_text='*'`` (or omit) to match everything."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "search_text": {
+                            "type": "string",
+                            "description": (
+                                "Free-text query. '*' or empty = match all products. "
+                                "Matches against product title, description and id."
+                            ),
+                            "default": "*",
+                        },
+                        "filters": {
+                            "type": "object",
+                            "description": (
+                                "Optional filter bundle. Omit any key to skip "
+                                "that filter; an empty array/empty string is also "
+                                "treated as 'no filter'."
+                            ),
+                            "properties": {
+                                "domains": {
+                                    "type": "array",
+                                    "description": (
+                                        "Multi-select list of business domains. "
+                                        "Values must come from ``list_facets().domains[*].id``."
+                                    ),
+                                    "items": {
+                                        "type": "string",
+                                        "enum": domain_ids,
+                                    },
+                                },
+                                "anonymization": {
+                                    "type": "string",
+                                    "description": (
+                                        "Required anonymization / data-handling level."
+                                    ),
+                                    "enum": anonymization_ids,
+                                },
+                                "study_id": {
+                                    "type": "string",
+                                    "description": (
+                                        "Clinical study / trial ID (e.g. 'STU-203121'). "
+                                        "Case-insensitive substring match."
+                                    ),
+                                },
+                            },
+                            "additionalProperties": False,
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+            }
+        )
+
+        list_facets_tool = types.Tool.model_validate(
+            {
+                "name": "list_facets",
+                "description": (
+                    "List canonical facet chips for the ``search`` tool: the "
+                    "valid ``domains`` and ``anonymization`` values with their "
+                    "display labels. Call this before rendering filter UIs so "
+                    "the ids match what ``search`` expects."
+                ),
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            }
+        )
+
+        return [ui_tool, search_tool, list_facets_tool]
 
     @server.call_tool()
     async def handle_call_tool(
         name: str, arguments: dict | None,
     ) -> types.CallToolResult:
-        if name != "search-data-products":
-            raise ValueError(f"Unknown tool: {name}")
+        args = arguments or {}
 
-        filters = (arguments or {}).get("filters", {})
-        domain = filters.get("domain", "all")
-        product_type = filters.get("product_type", "all")
-        sensitivity = filters.get("sensitivity", "all")
+        if name == "search-data-products":
+            filters = args.get("filters") or {}
+            domain = filters.get("domain", "all")
+            product_type = filters.get("product_type", "all")
+            sensitivity = filters.get("sensitivity", "all")
 
-        results = _search_products(
-            domain=domain,
-            product_type=product_type,
-            sensitivity=sensitivity,
-        )
-        facets = _get_facets()
+            results = _search_products(
+                domain=domain,
+                product_type=product_type,
+                sensitivity=sensitivity,
+            )
+            facets = _get_facets()
 
-        return types.CallToolResult(
-            content=[
-                types.TextContent(
-                    type="text",
-                    text=f"Search loaded with {len(results)} product(s) and {len(facets)} facet groups.",
-                )
-            ],
-            structuredContent={
-                "products": results,
-                "facets": facets,
-                "appliedFilters": {
-                    "domain": domain,
-                    "product_type": product_type,
-                    "sensitivity": sensitivity,
+            return types.CallToolResult(
+                content=[
+                    types.TextContent(
+                        type="text",
+                        text=f"Search loaded with {len(results)} product(s) and {len(facets)} facet groups.",
+                    )
+                ],
+                structuredContent={
+                    "products": results,
+                    "facets": facets,
+                    "appliedFilters": {
+                        "domain": domain,
+                        "product_type": product_type,
+                        "sensitivity": sensitivity,
+                    },
                 },
-            },
-        )
+            )
+
+        if name == "search":
+            search_text = args.get("search_text") or "*"
+            filters = args.get("filters") or {}
+            results = _search(search_text=search_text, filters=filters)
+
+            return types.CallToolResult(
+                content=[
+                    types.TextContent(
+                        type="text",
+                        text=f"Found {len(results)} product(s).",
+                    )
+                ],
+                structuredContent={
+                    "products": results,
+                    "total": len(results),
+                    "appliedFilters": {
+                        "search_text": search_text,
+                        "domains": filters.get("domains") or [],
+                        "anonymization": filters.get("anonymization"),
+                        "study_id": filters.get("study_id"),
+                    },
+                },
+            )
+
+        if name == "list_facets":
+            facets = _list_facets()
+            return types.CallToolResult(
+                content=[
+                    types.TextContent(
+                        type="text",
+                        text=(
+                            f"{len(facets['domains'])} domain(s), "
+                            f"{len(facets['anonymization'])} anonymization level(s)."
+                        ),
+                    )
+                ],
+                structuredContent=facets,
+            )
+
+        raise ValueError(f"Unknown tool: {name}")
 
     @server.list_resources()
     async def handle_list_resources() -> list[types.Resource]:

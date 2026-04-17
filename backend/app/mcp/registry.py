@@ -4,14 +4,17 @@ MCP Server Registry.
 Discovers MCP server folders under app/mcp/ and mounts each one
 on the FastAPI application at /mcp/{server-name}.
 
-Uses a raw ASGI middleware approach to avoid Starlette's trailing-slash
-redirect that breaks MCP clients.
+Uses a pure ASGI middleware (not BaseHTTPMiddleware) so that SSE chat
+streaming and MCP streamable HTTP pass through without buffering.
+The middleware intercepts ``/mcp/*`` paths and delegates everything
+else to the normal FastAPI/Starlette stack.
 """
 from __future__ import annotations
 
 import importlib.util
 import logging
 from pathlib import Path
+from typing import Any, Callable
 
 from fastapi import FastAPI
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
@@ -76,28 +79,39 @@ async def shutdown_mcp_servers() -> None:
     _contexts.clear()
 
 
-def mount_mcp_servers(app: FastAPI) -> None:
-    original_app = app.router
+class McpRoutingMiddleware:
+    """Pure ASGI middleware that intercepts ``/mcp/{name}`` requests.
 
-    prefixes = {f"/mcp/{a['name']}": a["name"] for a in MCP_APPS}
+    Avoids Starlette's trailing-slash redirect that breaks MCP clients.
+    Does **not** use ``BaseHTTPMiddleware`` — scope/receive/send pass
+    straight through with zero buffering, preserving SSE and streaming.
+    """
 
-    async def mcp_middleware(scope: dict, receive, send):
+    def __init__(self, app: Callable[..., Any]) -> None:
+        self.app = app
+        self.prefixes: dict[str, str] = {
+            f"/mcp/{a['name']}": a["name"] for a in MCP_APPS
+        }
+
+    async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
         if scope["type"] == "http":
             path: str = scope.get("path", "")
-            for prefix, name in prefixes.items():
+            for prefix, name in self.prefixes.items():
                 if path == prefix or path == prefix + "/":
                     await _handle_mcp(name, scope, receive, send)
                     return
 
-        await original_app(scope, receive, send)
-
-    app.router = mcp_middleware  # type: ignore[assignment]
-
-    for prefix in prefixes:
-        logger.info("Mounted MCP server at %s (middleware)", prefix)
+        await self.app(scope, receive, send)
 
 
-async def _handle_mcp(name: str, scope: dict, receive, send):
+def mount_mcp_servers(app: FastAPI) -> None:
+    app.add_middleware(McpRoutingMiddleware)
+
+    for a in MCP_APPS:
+        logger.info("Mounted MCP server at /mcp/%s (middleware)", a["name"])
+
+
+async def _handle_mcp(name: str, scope: dict, receive: Callable, send: Callable) -> None:
     method = scope.get("method", "")
 
     if method == "OPTIONS":
@@ -113,7 +127,7 @@ async def _handle_mcp(name: str, scope: dict, receive, send):
 
     original_send = send
 
-    async def send_with_cors(message: dict):
+    async def send_with_cors(message: dict) -> None:
         if message["type"] == "http.response.start":
             headers = list(message.get("headers", []))
             headers.extend(CORS_HEADERS)

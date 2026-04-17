@@ -7,6 +7,7 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ChatService } from '../../core/services/chat.service';
+import { hasInterruptType } from '../../core/models/chat.model';
 import { MessageComponent } from './message/message.component';
 import { ChatInputComponent } from './chat-input/chat-input.component';
 
@@ -18,13 +19,13 @@ import { ChatInputComponent } from './chat-input/chat-input.component';
     <div class="chat-container">
       <div class="chat-header">
         <h2>Data Governance Assistant</h2>
-        <button class="new-thread-btn" (click)="chatService.newThread()">
+        <button class="new-thread-btn" (click)="stream.switchThread(null)">
           + New Chat
         </button>
       </div>
 
       <div class="messages-area" #messagesArea>
-        @if (chatService.messages().length === 0) {
+        @if (stream.messages().length === 0) {
           <div class="empty-state">
             <div class="empty-icon">&#128172;</div>
             <h3>Welcome to Data Governance</h3>
@@ -36,18 +37,17 @@ import { ChatInputComponent } from './chat-input/chat-input.component';
             </ul>
           </div>
         }
-        @for (msg of chatService.messages(); track $index) {
+        @for (msg of stream.messages(); track $index) {
           <app-message
             [msg]="msg"
             (productSelected)="onProductSelected($event)"
-            (confirmed)="onConfirmed($event)"
             (facetSelected)="onFacetSelected($event)"
             (cartAction)="onCartAction($event)"
             (openSearchPanel)="onOpenSearch()"
             (refineSearch)="onRefineSearch()"
           />
         }
-        @if (chatService.loading()) {
+        @if (stream.isLoading()) {
           <div class="typing-indicator">
             <div class="dot"></div>
             <div class="dot"></div>
@@ -57,7 +57,7 @@ import { ChatInputComponent } from './chat-input/chat-input.component';
       </div>
 
       <app-chat-input
-        [disabled]="chatService.loading()"
+        [disabled]="stream.isLoading()"
         (messageSent)="onSend($event)"
       />
     </div>
@@ -176,7 +176,8 @@ import { ChatInputComponent } from './chat-input/chat-input.component';
   ],
 })
 export class ChatComponent implements AfterViewChecked {
-  chatService = inject(ChatService);
+  private readonly chatService = inject(ChatService);
+  readonly stream = this.chatService.stream;
 
   @ViewChild('messagesArea') private messagesArea!: ElementRef;
 
@@ -185,13 +186,16 @@ export class ChatComponent implements AfterViewChecked {
   }
 
   onSend(message: string): void {
-    const interrupt = this.chatService.currentInterrupt();
-    if (interrupt?.interrupt) {
-      const interruptType = interrupt.interrupt.interrupt_value?.['type'];
+    const interrupt = this.stream.currentInterrupt();
+    if (interrupt) {
+      const value = interrupt.interrupt_value;
       const lower = message.toLowerCase();
 
-      if (interruptType === 'mcp_app') {
-        this.addUserMessageAndResume(message, { action: 'user_message', text: message });
+      if (hasInterruptType(value, 'mcp_app')) {
+        this.submitUserTextAndResume(message, {
+          action: 'user_message',
+          text: message,
+        });
         return;
       }
 
@@ -209,34 +213,35 @@ export class ChatComponent implements AfterViewChecked {
         'need to add', 'want to add', 'also need', 'missed a product',
       ]);
 
-      if (interruptType === 'product_selection') {
+      if (hasInterruptType(value, 'product_selection')) {
         if (searchIntent) {
-          this.addUserMessageAndResume(message, { action: 'open_search' });
+          this.submitUserTextAndResume(message, { action: 'open_search' });
           return;
         }
         if (refineIntent || addMoreIntent) {
-          this.addUserMessageAndResume(message, { action: 'refine_filters' });
+          this.submitUserTextAndResume(message, { action: 'refine_filters' });
           return;
         }
       }
 
-      if (interruptType === 'facet_selection' && refineIntent) {
-        this.addUserMessageAndResume(message, { value: 'all' });
-        return;
-      }
+      // For facet_selection, free-text is forwarded to the backend router which
+      // classifies it as faq/nav/user_text. Do NOT emit a structured facet
+      // answer here — that requires the user to click a chip.
+      this.submitUserTextAndResume(message, {
+        action: 'user_message',
+        text: message,
+      });
+      return;
     }
-    this.chatService.sendMessage(message);
+    this.stream.submit({ messages: [{ type: 'human', content: message }] });
   }
 
-  private addUserMessageAndResume(
+  private submitUserTextAndResume(
     text: string,
-    data: Record<string, unknown>
+    data: Record<string, unknown>,
   ): void {
-    this.chatService.messages.update((msgs) => [
-      ...msgs,
-      { role: 'user', content: text, timestamp: new Date() },
-    ]);
-    this.chatService.resumeWithData(data);
+    this.stream.appendUserText(text);
+    this.stream.submit({ resume: data });
   }
 
   private matchesIntent(text: string, patterns: string[]): boolean {
@@ -244,27 +249,23 @@ export class ChatComponent implements AfterViewChecked {
   }
 
   onProductSelected(data: Record<string, unknown>): void {
-    this.chatService.resumeWithData(data);
-  }
-
-  onConfirmed(yes: boolean): void {
-    this.chatService.resumeWithData({ confirmed: yes, action: yes ? 'confirm' : 'edit' });
+    this.stream.submit({ resume: data });
   }
 
   onFacetSelected(data: Record<string, unknown>): void {
-    this.chatService.resumeWithData(data);
+    this.stream.submit({ resume: data });
   }
 
   onCartAction(data: Record<string, unknown>): void {
-    this.chatService.resumeWithData(data);
+    this.stream.submit({ resume: data });
   }
 
   onOpenSearch(): void {
-    this.chatService.resumeWithData({ action: 'open_search' });
+    this.stream.submit({ resume: { action: 'open_search' } });
   }
 
   onRefineSearch(): void {
-    this.chatService.resumeWithData({ action: 'refine_filters' });
+    this.stream.submit({ resume: { action: 'refine_filters' } });
   }
 
   private scrollToBottom(): void {

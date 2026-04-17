@@ -15,6 +15,14 @@ app.use(
     target: BACKEND_URL,
     changeOrigin: true,
     pathRewrite: (_path) => `/api/v1${_path}`,
+    on: {
+      proxyRes: (proxyRes, _req, res) => {
+        const ct = proxyRes.headers['content-type'] || '';
+        if (ct.includes('text/event-stream')) {
+          (res as any).flushHeaders?.();
+        }
+      },
+    },
   })
 );
 

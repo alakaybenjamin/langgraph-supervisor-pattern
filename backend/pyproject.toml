@@ -21,6 +21,7 @@ dependencies = [
     "httpx>=0.28",
     "psycopg[binary]>=3.2",
     "python-dotenv>=1.0",
+    "ag-ui-protocol>=0.1.15",
 ]
 
 [tool.hatch.build.targets.wheel]

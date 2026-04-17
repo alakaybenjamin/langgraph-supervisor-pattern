@@ -44,6 +44,14 @@ class Settings(BaseSettings):
 
     TAVILY_API_KEY: str = ""
 
+    # --- MCP search-app server (simulated 3rd-party data catalog) -----------
+    # Streamable-HTTP endpoint that the request-access subgraph calls for
+    # product search and facet discovery. Defaults to the loopback mount in
+    # this FastAPI process; point at a different host to use a truly
+    # external MCP server.
+    MCP_SEARCH_URL: str = "http://localhost:8000/mcp/search-app"
+    MCP_SEARCH_TIMEOUT_SECONDS: float = 10.0
+
     @model_validator(mode="after")
     def _check_provider_credentials(self) -> Settings:
         if self.LLM_PROVIDER == "openai" and not self.OPENAI_API_KEY:

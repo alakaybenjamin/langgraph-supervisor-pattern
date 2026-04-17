@@ -1,0 +1,29 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__(<p>__start__</p>)
+	route_request_access_turn(route_request_access_turn)
+	resume_pending_step(resume_pending_step)
+	run_current_workflow_step(run_current_workflow_step)
+	handoff_to_parent_faq(handoff_to_parent_faq)
+	handle_navigation(handle_navigation)
+	invalidate_downstream_state(invalidate_downstream_state)
+	goto_target_step(goto_target_step)
+	choose_domain(choose_domain)
+	choose_anonymization(choose_anonymization)
+	search_products(search_products)
+	choose_products(choose_products)
+	show_cart(show_cart)
+	show_cart_readonly(show_cart_readonly)
+	generate_dynamic_form(generate_dynamic_form)
+	fill_form(fill_form)
+	submit_request(submit_request)
+	__end__(<p>__end__</p>)
+	__start__ --> route_request_access_turn;
+	route_request_access_turn --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc

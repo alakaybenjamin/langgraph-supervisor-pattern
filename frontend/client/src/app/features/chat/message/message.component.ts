@@ -1,6 +1,15 @@
 import { Component, Input, Output, EventEmitter } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { ChatMessage } from '../../../core/models/chat.model';
+import {
+  ActionButton,
+  ChatMessage,
+  FacetOption,
+  InterruptOf,
+  InterruptType,
+  Product,
+  asInterrupt,
+  hasInterruptType,
+} from '../../../core/models/chat.model';
 
 @Component({
   selector: 'app-message',
@@ -28,7 +37,7 @@ import { ChatMessage } from '../../../core/models/chat.model';
         <!-- Product selection (multi-select) -->
         @if (isProductSelection() && !resolved) {
           <div class="product-cards">
-            @for (p of products(); track p.metadata?.id) {
+            @for (p of products(); track $index) {
               <button
                 class="product-card"
                 [class.product-card--selected]="isProductSelected(p)"
@@ -90,13 +99,30 @@ import { ChatMessage } from '../../../core/models/chat.model';
 
         <!-- Confirmation -->
         @if (isConfirmation() && !resolved) {
+          @if (confirmProductsSummary()) {
+            <div
+              class="confirm-summary"
+              [innerHTML]="formatContent(confirmProductsSummary())"
+            ></div>
+          }
+          @if (confirmFormDataEntries().length > 0) {
+            <div class="confirm-form">
+              <div class="confirm-form-title">Your answers</div>
+              @for (entry of confirmFormDataEntries(); track entry.key) {
+                <div class="confirm-form-row">
+                  <span class="confirm-form-key">{{ entry.key }}:</span>
+                  <span class="confirm-form-value">{{ entry.value }}</span>
+                </div>
+              }
+            </div>
+          }
           <div class="confirm-actions">
             @if (confirmActions().length > 0) {
               @for (action of confirmActions(); track action.id) {
                 <button
                   class="confirm-btn"
-                  [class.yes]="action.id === 'confirm'"
-                  [class.no]="action.id !== 'confirm'"
+                  [class.yes]="isPrimaryConfirmAction(action.id)"
+                  [class.no]="!isPrimaryConfirmAction(action.id)"
                   (click)="confirmAction(action.id)"
                 >
                   {{ action.label }}
@@ -349,6 +375,49 @@ import { ChatMessage } from '../../../core/models/chat.model';
         }
       }
 
+      /* Confirmation review */
+      .confirm-summary {
+        margin-top: 12px;
+        padding: 10px 12px;
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        font-size: 13px;
+        color: #334155;
+        line-height: 1.6;
+      }
+
+      .confirm-form {
+        margin-top: 8px;
+        padding: 10px 12px;
+        background: #fefce8;
+        border: 1px solid #fde68a;
+        border-radius: 8px;
+        font-size: 13px;
+        color: #78350f;
+      }
+
+      .confirm-form-title {
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+
+      .confirm-form-row {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 2px;
+      }
+
+      .confirm-form-key {
+        font-weight: 500;
+        color: #92400e;
+      }
+
+      .confirm-form-value {
+        color: #78350f;
+        word-break: break-word;
+      }
+
       .confirm-actions {
         display: flex;
         gap: 8px;
@@ -401,75 +470,89 @@ import { ChatMessage } from '../../../core/models/chat.model';
 export class MessageComponent {
   @Input({ required: true }) msg!: ChatMessage;
   @Output() productSelected = new EventEmitter<Record<string, unknown>>();
-  @Output() confirmed = new EventEmitter<boolean>();
   @Output() facetSelected = new EventEmitter<Record<string, unknown>>();
   @Output() cartAction = new EventEmitter<Record<string, unknown>>();
   @Output() openSearchPanel = new EventEmitter<void>();
   @Output() refineSearch = new EventEmitter<void>();
 
   resolved = false;
-  selectedProducts: any[] = [];
+  selectedProducts: Product[] = [];
 
-  facetOptions(): { id: string; label: string }[] {
-    const val = this.msg.interrupt?.interrupt_value;
-    if (val?.['type'] === 'facet_selection' && val?.['options']) {
-      return val['options'] as { id: string; label: string }[];
-    }
-    return [];
+  /**
+   * Single typed narrowing helper — the frontend equivalent of the
+   * LangChain-docs `extractStructuredOutput<T>()` pattern. Callers get
+   * back a fully typed interrupt of the requested variant, or `null` if
+   * the message has a different interrupt type / is missing required
+   * fields.
+   */
+  private interrupt<T extends InterruptType>(type: T): InterruptOf<T> | null {
+    return asInterrupt(this.msg.interrupt?.interrupt_value, type);
+  }
+
+  facetOptions(): FacetOption[] {
+    return this.interrupt('facet_selection')?.options ?? [];
   }
 
   isProductSelection(): boolean {
-    return this.msg.interrupt?.interrupt_value?.['type'] === 'product_selection';
+    return hasInterruptType(this.msg.interrupt?.interrupt_value, 'product_selection');
   }
 
-  products(): any[] {
-    const val = this.msg.interrupt?.interrupt_value;
-    if (val?.['type'] === 'product_selection' && val?.['products']) {
-      return val['products'] as any[];
-    }
-    return [];
+  products(): Product[] {
+    return this.interrupt('product_selection')?.products ?? [];
   }
 
-  cartActions(): { id: string; label: string }[] {
-    const val = this.msg.interrupt?.interrupt_value;
-    if (val?.['type'] === 'cart_review' && val?.['actions']) {
-      return val['actions'] as { id: string; label: string }[];
-    }
-    return [];
+  cartActions(): ActionButton[] {
+    return this.interrupt('cart_review')?.actions ?? [];
   }
 
-  confirmActions(): { id: string; label: string }[] {
-    const val = this.msg.interrupt?.interrupt_value;
-    if (val?.['type'] === 'confirmation' && val?.['actions']) {
-      return val['actions'] as { id: string; label: string }[];
-    }
-    return [];
+  confirmActions(): ActionButton[] {
+    return this.interrupt('confirmation')?.actions ?? [];
   }
 
   isConfirmation(): boolean {
-    return this.msg.interrupt?.interrupt_value?.['type'] === 'confirmation';
+    return hasInterruptType(this.msg.interrupt?.interrupt_value, 'confirmation');
+  }
+
+  confirmProductsSummary(): string {
+    return this.interrupt('confirmation')?.products_summary ?? '';
+  }
+
+  confirmFormDataEntries(): { key: string; value: string }[] {
+    const data = this.interrupt('confirmation')?.form_data;
+    if (!data || typeof data !== 'object') return [];
+    return Object.entries(data).map(([key, value]) => ({
+      key,
+      value:
+        typeof value === 'string'
+          ? value
+          : value === null || value === undefined
+            ? ''
+            : JSON.stringify(value),
+    }));
+  }
+
+  isPrimaryConfirmAction(id: string): boolean {
+    return id === 'submit' || id === 'confirm';
   }
 
   selectFacet(value: string): void {
     this.resolved = true;
-    const facet = this.msg.interrupt?.interrupt_value?.['facet'] as string;
+    const facet = this.interrupt('facet_selection')?.facet ?? '';
     this.facetSelected.emit({ value, facet });
   }
 
-  isProductSelected(product: any): boolean {
+  isProductSelected(product: Product): boolean {
     return this.selectedProducts.some(
-      (p: any) => p.metadata?.id === product.metadata?.id
+      (p) => p.metadata?.id === product.metadata?.id,
     );
   }
 
-  toggleProduct(product: any): void {
+  toggleProduct(product: Product): void {
     const idx = this.selectedProducts.findIndex(
-      (p: any) => p.metadata?.id === product.metadata?.id
+      (p) => p.metadata?.id === product.metadata?.id,
     );
     if (idx >= 0) {
-      this.selectedProducts = this.selectedProducts.filter(
-        (_, i) => i !== idx
-      );
+      this.selectedProducts = this.selectedProducts.filter((_, i) => i !== idx);
     } else {
       this.selectedProducts = [...this.selectedProducts, product];
     }
@@ -500,18 +583,16 @@ export class MessageComponent {
 
   confirmAction(action: string): void {
     this.resolved = true;
-    if (action === 'confirm') {
-      this.confirmed.emit(true);
-    } else if (action === 'edit') {
-      this.confirmed.emit(false);
-    } else if (action === 'add_more') {
+    if (action === 'add_more') {
       this.cartAction.emit({ action: 'add_more' });
+      return;
     }
+    this.productSelected.emit({ action });
   }
 
   confirm(yes: boolean): void {
     this.resolved = true;
-    this.confirmed.emit(yes);
+    this.productSelected.emit({ action: yes ? 'submit' : 'edit' });
   }
 
   truncate(text: string, maxLen: number): string {
