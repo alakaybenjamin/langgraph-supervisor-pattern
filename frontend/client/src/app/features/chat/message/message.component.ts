@@ -28,7 +28,7 @@ import { ChatMessage } from '../../../core/models/chat.model';
         <!-- Product selection (multi-select) -->
         @if (isProductSelection() && !resolved) {
           <div class="product-cards">
-            @for (p of products(); track p.metadata?.id) {
+            @for (p of products(); track $index) {
               <button
                 class="product-card"
                 [class.product-card--selected]="isProductSelected(p)"
@@ -90,13 +90,30 @@ import { ChatMessage } from '../../../core/models/chat.model';
 
         <!-- Confirmation -->
         @if (isConfirmation() && !resolved) {
+          @if (confirmProductsSummary()) {
+            <div
+              class="confirm-summary"
+              [innerHTML]="formatContent(confirmProductsSummary())"
+            ></div>
+          }
+          @if (confirmFormDataEntries().length > 0) {
+            <div class="confirm-form">
+              <div class="confirm-form-title">Your answers</div>
+              @for (entry of confirmFormDataEntries(); track entry.key) {
+                <div class="confirm-form-row">
+                  <span class="confirm-form-key">{{ entry.key }}:</span>
+                  <span class="confirm-form-value">{{ entry.value }}</span>
+                </div>
+              }
+            </div>
+          }
           <div class="confirm-actions">
             @if (confirmActions().length > 0) {
               @for (action of confirmActions(); track action.id) {
                 <button
                   class="confirm-btn"
-                  [class.yes]="action.id === 'confirm'"
-                  [class.no]="action.id !== 'confirm'"
+                  [class.yes]="isPrimaryConfirmAction(action.id)"
+                  [class.no]="!isPrimaryConfirmAction(action.id)"
                   (click)="confirmAction(action.id)"
                 >
                   {{ action.label }}
@@ -349,6 +366,49 @@ import { ChatMessage } from '../../../core/models/chat.model';
         }
       }
 
+      /* Confirmation review */
+      .confirm-summary {
+        margin-top: 12px;
+        padding: 10px 12px;
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        font-size: 13px;
+        color: #334155;
+        line-height: 1.6;
+      }
+
+      .confirm-form {
+        margin-top: 8px;
+        padding: 10px 12px;
+        background: #fefce8;
+        border: 1px solid #fde68a;
+        border-radius: 8px;
+        font-size: 13px;
+        color: #78350f;
+      }
+
+      .confirm-form-title {
+        font-weight: 600;
+        margin-bottom: 6px;
+      }
+
+      .confirm-form-row {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 2px;
+      }
+
+      .confirm-form-key {
+        font-weight: 500;
+        color: #92400e;
+      }
+
+      .confirm-form-value {
+        color: #78350f;
+        word-break: break-word;
+      }
+
       .confirm-actions {
         display: flex;
         gap: 8px;
@@ -401,7 +461,6 @@ import { ChatMessage } from '../../../core/models/chat.model';
 export class MessageComponent {
   @Input({ required: true }) msg!: ChatMessage;
   @Output() productSelected = new EventEmitter<Record<string, unknown>>();
-  @Output() confirmed = new EventEmitter<boolean>();
   @Output() facetSelected = new EventEmitter<Record<string, unknown>>();
   @Output() cartAction = new EventEmitter<Record<string, unknown>>();
   @Output() openSearchPanel = new EventEmitter<void>();
@@ -448,6 +507,33 @@ export class MessageComponent {
 
   isConfirmation(): boolean {
     return this.msg.interrupt?.interrupt_value?.['type'] === 'confirmation';
+  }
+
+  confirmProductsSummary(): string {
+    const val = this.msg.interrupt?.interrupt_value;
+    if (val?.['type'] !== 'confirmation') return '';
+    const summary = val['products_summary'];
+    return typeof summary === 'string' ? summary : '';
+  }
+
+  confirmFormDataEntries(): { key: string; value: string }[] {
+    const val = this.msg.interrupt?.interrupt_value;
+    if (val?.['type'] !== 'confirmation') return [];
+    const data = val['form_data'];
+    if (!data || typeof data !== 'object') return [];
+    return Object.entries(data as Record<string, unknown>).map(([key, value]) => ({
+      key,
+      value:
+        typeof value === 'string'
+          ? value
+          : value === null || value === undefined
+            ? ''
+            : JSON.stringify(value),
+    }));
+  }
+
+  isPrimaryConfirmAction(id: string): boolean {
+    return id === 'submit' || id === 'confirm';
   }
 
   selectFacet(value: string): void {
@@ -500,18 +586,16 @@ export class MessageComponent {
 
   confirmAction(action: string): void {
     this.resolved = true;
-    if (action === 'confirm') {
-      this.confirmed.emit(true);
-    } else if (action === 'edit') {
-      this.confirmed.emit(false);
-    } else if (action === 'add_more') {
+    if (action === 'add_more') {
       this.cartAction.emit({ action: 'add_more' });
+      return;
     }
+    this.productSelected.emit({ action });
   }
 
   confirm(yes: boolean): void {
     this.resolved = true;
-    this.confirmed.emit(yes);
+    this.productSelected.emit({ action: yes ? 'submit' : 'edit' });
   }
 
   truncate(text: string, maxLen: number): string {

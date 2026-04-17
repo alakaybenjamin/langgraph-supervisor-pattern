@@ -40,7 +40,6 @@ import { ChatInputComponent } from './chat-input/chat-input.component';
           <app-message
             [msg]="msg"
             (productSelected)="onProductSelected($event)"
-            (confirmed)="onConfirmed($event)"
             (facetSelected)="onFacetSelected($event)"
             (cartAction)="onCartAction($event)"
             (openSearchPanel)="onOpenSearch()"
@@ -220,10 +219,16 @@ export class ChatComponent implements AfterViewChecked {
         }
       }
 
-      if (interruptType === 'facet_selection' && refineIntent) {
-        this.addUserMessageAndResume(message, { value: 'all' });
-        return;
-      }
+      // For facet_selection, free-text is forwarded to the backend router which
+      // classifies it as faq/nav/user_text. Do NOT emit a structured facet
+      // answer here — that requires the user to click a chip.
+
+      // Resume with the user's text so the LangGraph thread receives structured input.
+      this.addUserMessageAndResume(message, {
+        action: 'user_message',
+        text: message,
+      });
+      return;
     }
     this.chatService.sendMessage(message);
   }
@@ -245,10 +250,6 @@ export class ChatComponent implements AfterViewChecked {
 
   onProductSelected(data: Record<string, unknown>): void {
     this.chatService.resumeWithData(data);
-  }
-
-  onConfirmed(yes: boolean): void {
-    this.chatService.resumeWithData({ confirmed: yes, action: yes ? 'confirm' : 'edit' });
   }
 
   onFacetSelected(data: Record<string, unknown>): void {

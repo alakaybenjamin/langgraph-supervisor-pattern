@@ -134,6 +134,9 @@ export class ChatService {
         case 'done': {
           const doneData = data as SSEDoneEvent;
           this.threadId.set(doneData.thread_id || this.threadId());
+          if (doneData.content) {
+            this.updateLastAssistantMessage(doneData.content);
+          }
           break;
         }
         case 'interrupt': {
@@ -149,7 +152,7 @@ export class ChatService {
           const msg =
             interruptData.interrupt_value?.['message']?.toString() ||
             'Please complete the action in the panel.';
-          this.updateLastAssistantMessage(msg, payload);
+          this.setInterruptMessage(msg, payload);
           break;
         }
         case 'error': {
@@ -179,6 +182,37 @@ export class ChatService {
       const last = updated[updated.length - 1];
       if (last?.role === 'assistant') {
         updated[updated.length - 1] = { ...last, content, interrupt };
+      }
+      return updated;
+    });
+  }
+
+  private setInterruptMessage(content: string, interrupt: InterruptPayload): void {
+    this.messages.update((msgs) => {
+      const updated = [...msgs];
+      const last = updated[updated.length - 1];
+
+      // If a streamed answer already exists in the current assistant message,
+      // keep it and append a fresh assistant bubble for the interrupt prompt.
+      if (last?.role === 'assistant' && last.content.trim()) {
+        updated.push({
+          role: 'assistant',
+          content,
+          interrupt,
+          timestamp: new Date(),
+        });
+        return updated;
+      }
+
+      if (last?.role === 'assistant') {
+        updated[updated.length - 1] = { ...last, content, interrupt };
+      } else {
+        updated.push({
+          role: 'assistant',
+          content,
+          interrupt,
+          timestamp: new Date(),
+        });
       }
       return updated;
     });
