@@ -5,7 +5,7 @@ import {
   AfterViewChecked,
   inject,
 } from '@angular/core';
-import { CommonModule } from '@angular/common';
+
 import { ChatService } from '../../core/services/chat.service';
 import { hasInterruptType } from '../../core/models/chat.model';
 import { MessageComponent } from './message/message.component';
@@ -14,7 +14,7 @@ import { ChatInputComponent } from './chat-input/chat-input.component';
 @Component({
   selector: 'app-chat',
   standalone: true,
-  imports: [CommonModule, MessageComponent, ChatInputComponent],
+  imports: [MessageComponent, ChatInputComponent],
   template: `
     <div class="chat-container">
       <div class="chat-header">

@@ -7,7 +7,7 @@ import {
   ElementRef,
   ViewChild,
 } from '@angular/core';
-import { CommonModule } from '@angular/common';
+
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { ChatService } from '../../core/services/chat.service';
 import { asInterrupt } from '../../core/models/chat.model';
@@ -16,7 +16,7 @@ import { McpService } from '../../core/services/mcp.service';
 @Component({
   selector: 'app-mcp-panel',
   standalone: true,
-  imports: [CommonModule],
+  imports: [],
   template: `
     <div class="panel" [class.open]="isOpen()">
       <div class="panel-header">
