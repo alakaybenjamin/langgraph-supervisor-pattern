@@ -21,10 +21,22 @@ import {
         {{ msg.role === 'user' ? 'U' : msg.role === 'assistant' ? 'A' : 'S' }}
       </div>
       <div class="bubble">
-        <div class="content" [innerHTML]="formatContent(msg.content)"></div>
+        @if (isStaleInteractive()) {
+          <!-- The interrupt this bubble carried was superseded before
+               the user acted on it. Per UX: drop the original prompt
+               text + the rich widget entirely and replace them with a
+               single "User Skipped X" notice in the badge styling. The
+               bubble shape itself is preserved so the transcript still
+               reads naturally. -->
+          <div class="skipped-notice">
+            User Skipped {{ skippedActionLabel() }}
+          </div>
+        } @else {
+          <div class="content" [innerHTML]="formatContent(msg.content)"></div>
+        }
 
         <!-- Facet selection: domain / type chips -->
-        @if (facetOptions().length > 0 && !resolved) {
+        @if (facetOptions().length > 0 && isActionable()) {
           <div class="facet-options">
             @for (opt of facetOptions(); track opt.id) {
               <button class="facet-chip" (click)="selectFacet(opt.id)">
@@ -35,7 +47,7 @@ import {
         }
 
         <!-- Product selection (multi-select) -->
-        @if (isProductSelection() && !resolved) {
+        @if (isProductSelection() && isActionable()) {
           <div class="product-cards">
             @for (p of products(); track $index) {
               <button
@@ -82,7 +94,7 @@ import {
         }
 
         <!-- Cart review -->
-        @if (cartActions().length > 0 && !resolved) {
+        @if (cartActions().length > 0 && isActionable()) {
           <div class="cart-actions">
             @for (action of cartActions(); track action.id) {
               <button
@@ -98,7 +110,7 @@ import {
         }
 
         <!-- Confirmation -->
-        @if (isConfirmation() && !resolved) {
+        @if (isConfirmation() && isActionable()) {
           @if (confirmProductsSummary()) {
             <div
               class="confirm-summary"
@@ -464,19 +476,110 @@ import {
         border-radius: 4px;
         font-weight: 500;
       }
+
+      /* Replaces the original prompt text + rich widget on a bubble
+         whose interrupt was superseded before the user acted on it.
+         Same visual language as the previous "Superseded" badge so the
+         transcript reads as a clear, low-key skip notice. */
+      .skipped-notice {
+        display: inline-block;
+        font-size: 11px;
+        color: #64748b;
+        background: #f1f5f9;
+        border: 1px dashed #cbd5e1;
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-weight: 500;
+      }
     `,
   ],
 })
 export class MessageComponent {
   @Input({ required: true }) msg!: ChatMessage;
+  /**
+   * The ``prompt_id`` of the interrupt currently awaiting user input,
+   * propagated down from ``ChatService.currentInterrupt``. When this
+   * does NOT match the message's own ``prompt_id`` the conversation has
+   * moved on (the user typed a FAQ question, navigated, the agent
+   * committed, etc.) and this message's chips/buttons MUST stop being
+   * actionable to prevent stale clicks. ``null`` means there is no
+   * active interrupt at all (e.g. mid-FAQ answer streaming) so every
+   * past interactive bubble is stale.
+   */
+  @Input() activePromptId: string | null = null;
   @Output() productSelected = new EventEmitter<Record<string, unknown>>();
   @Output() facetSelected = new EventEmitter<Record<string, unknown>>();
   @Output() cartAction = new EventEmitter<Record<string, unknown>>();
   @Output() openSearchPanel = new EventEmitter<void>();
   @Output() refineSearch = new EventEmitter<void>();
 
+  /** Local flag — flips ``true`` when the user clicks a button on this
+   * message. Distinct from staleness: a clicked message is "Completed",
+   * a stale-but-unclicked one is "Superseded".
+   */
   resolved = false;
   selectedProducts: Product[] = [];
+
+  /** This message's own prompt id, if it carries an interrupt. */
+  private myPromptId(): string | null {
+    const v = this.msg.interrupt?.interrupt_value as
+      | { prompt_id?: string }
+      | undefined;
+    return v?.prompt_id ?? null;
+  }
+
+  /**
+   * True when this message rendered an interrupt that has since been
+   * superseded by a newer one (or by the workflow moving on without a
+   * new interrupt at all). Drives both the "Superseded" badge and the
+   * dimmed bubble.
+   */
+  isStale(): boolean {
+    if (!this.msg.interrupt) return false;
+    const my = this.myPromptId();
+    if (!my) return false; // can't tell — leave it alone
+    return this.activePromptId !== my;
+  }
+
+  /** "Show the interactive UI here?" — only when not clicked AND not
+   * stale. Single source of truth used by every ``@if`` guard above.
+   */
+  isActionable(): boolean {
+    return !this.resolved && !this.isStale();
+  }
+
+  /** True when the bubble originally rendered an actionable widget
+   * (chips, product picker, cart, confirmation, MCP App) AND that
+   * interrupt has since been superseded. ``narrow_message`` bubbles are
+   * plain text and never get the skipped-notice treatment — there's
+   * nothing to skip past, the text alone is the message.
+   */
+  isStaleInteractive(): boolean {
+    if (!this.isStale()) return false;
+    const t = (this.msg.interrupt?.interrupt_value as { type?: string })?.type;
+    return t !== undefined && t !== 'narrow_message';
+  }
+
+  /** Human-readable label for the skipped widget, dropped into
+   * "User Skipped {label}". Kept in sync with the interrupt union in
+   * ``chat.model.ts``. */
+  skippedActionLabel(): string {
+    const t = (this.msg.interrupt?.interrupt_value as { type?: string })?.type;
+    switch (t) {
+      case 'product_selection':
+        return 'Data Product Selection';
+      case 'facet_selection':
+        return 'Filter Selection';
+      case 'cart_review':
+        return 'Cart Review';
+      case 'confirmation':
+        return 'Confirmation';
+      case 'mcp_app':
+        return 'App Action';
+      default:
+        return 'Action';
+    }
+  }
 
   /**
    * Single typed narrowing helper — the frontend equivalent of the

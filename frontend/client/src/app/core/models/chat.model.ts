@@ -57,11 +57,17 @@ export interface SSEErrorEvent {
 // Interrupt payload — discriminated union
 // ---------------------------------------------------------------------------
 
-/** Shared fields on every interrupt value. */
+/** Shared fields on every interrupt value.
+ *
+ * ``prompt_id`` is required by the backend (every emitter sets it; see
+ * ``_hitl_step`` in the request-access subgraph and ``narrow_search.py``)
+ * and is the basis for the frontend's "is this interrupt still active?"
+ * check that gates chip/button actionability on past messages.
+ */
 interface InterruptBase {
   message?: string;
   step: string;
-  prompt_id?: string;
+  prompt_id: string;
 }
 
 export interface FacetSelectionInterrupt extends InterruptBase {
@@ -100,12 +106,26 @@ export interface McpAppInterrupt extends InterruptBase {
   context?: Record<string, unknown>;
 }
 
+/**
+ * Plain-text conversational prompt from the request-access narrowing
+ * subagent. Carries no chips, no buttons — the message component
+ * intentionally has no rendering branch for this type, so the bubble
+ * shows the `message` only and the user replies via the normal chat
+ * input. Backend wraps that reply as `Command(resume={action:
+ * "user_message", text})` and feeds it back into the agent loop.
+ */
+export interface NarrowMessageInterrupt extends InterruptBase {
+  type: 'narrow_message';
+  message: string;
+}
+
 export type InterruptValue =
   | FacetSelectionInterrupt
   | ProductSelectionInterrupt
   | CartReviewInterrupt
   | ConfirmationInterrupt
-  | McpAppInterrupt;
+  | McpAppInterrupt
+  | NarrowMessageInterrupt;
 
 export type InterruptType = InterruptValue['type'];
 
@@ -119,11 +139,12 @@ export type InterruptOf<T extends InterruptType> = Extract<
 export const INTERRUPT_REQUIRED_FIELDS: {
   readonly [K in InterruptType]: readonly (keyof InterruptOf<K>)[];
 } = {
-  facet_selection: ['type', 'facet', 'options', 'step'],
-  product_selection: ['type', 'products', 'step'],
-  cart_review: ['type', 'products', 'actions', 'step'],
-  confirmation: ['type', 'step'],
-  mcp_app: ['type', 'resource_uri', 'step'],
+  facet_selection: ['type', 'facet', 'options', 'step', 'prompt_id'],
+  product_selection: ['type', 'products', 'step', 'prompt_id'],
+  cart_review: ['type', 'products', 'actions', 'step', 'prompt_id'],
+  confirmation: ['type', 'step', 'prompt_id'],
+  mcp_app: ['type', 'resource_uri', 'step', 'prompt_id'],
+  narrow_message: ['type', 'message', 'step', 'prompt_id'],
 } as const;
 
 /**

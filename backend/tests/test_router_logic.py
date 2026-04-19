@@ -26,6 +26,7 @@ from app.graph.router_logic import (
 from app.graph.state import (
     RA_STEP_CHOOSE_ANONYMIZATION,
     RA_STEP_CHOOSE_DOMAIN,
+    RA_STEP_NARROW_SEARCH,
     RA_STEP_CHOOSE_PRODUCTS,
 )
 
@@ -102,7 +103,7 @@ def _install_fresh_llm(mapping: dict[str, dict[str, Any] | None]) -> None:
 
 
 def test_nav_intent_from_resume_value() -> None:
-    assert nav_intent_from_resume_value({"action": "refine_filters"}) == RA_STEP_CHOOSE_DOMAIN
+    assert nav_intent_from_resume_value({"action": "refine_filters"}) == RA_STEP_NARROW_SEARCH
     assert nav_intent_from_resume_value({"action": "add_more"}) == RA_STEP_CHOOSE_PRODUCTS
     assert nav_intent_from_resume_value({"action": "change_selection"}) == RA_STEP_CHOOSE_PRODUCTS
     assert nav_intent_from_resume_value({"action": "view_cart"}) == "view_cart"
@@ -141,15 +142,21 @@ def test_workflow_text_faq_kb() -> None:
 
 
 def test_workflow_text_navigate_to_step_domain() -> None:
+    """Textual "change domain" intents now route to the narrowing subagent,
+    not the legacy chip picker.
+    """
     _install_workflow_llm(
         {"change domain": {"name": "navigate_to_step", "args": {"target": "choose_domain"}}}
     )
     result = classify_workflow_text("I want to change domain")
     assert result["kind"] == "nav"
-    assert result["nav_target"] == RA_STEP_CHOOSE_DOMAIN
+    assert result["nav_target"] == RA_STEP_NARROW_SEARCH
 
 
 def test_workflow_text_navigate_to_anonymization() -> None:
+    """Likewise, "change anonymization" goes through ``narrow_search`` — the
+    user can keep typing plain text to refine their filters.
+    """
     _install_workflow_llm(
         {
             "anonymization": {
@@ -160,7 +167,7 @@ def test_workflow_text_navigate_to_anonymization() -> None:
     )
     result = classify_workflow_text("change the anonymization level")
     assert result["kind"] == "nav"
-    assert result["nav_target"] == RA_STEP_CHOOSE_ANONYMIZATION
+    assert result["nav_target"] == RA_STEP_NARROW_SEARCH
 
 
 def test_workflow_text_view_cart() -> None:

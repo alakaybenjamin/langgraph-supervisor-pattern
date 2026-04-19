@@ -52,6 +52,20 @@ class AppState(TypedDict):
     # ``choose_domain`` / ``choose_anonymization`` when rendering chips.
     mcp_facet_cache: NotRequired[dict]
 
+    # Conversational narrowing subagent state. The ``narrow_search`` node owns
+    # this dict end-to-end: it carries the agent's internal message log
+    # (system prompt, tool calls, tool results), a turn counter for the
+    # defensive cap, and the id of the most recent ``ask_user`` tool call so
+    # the next iteration can pair the user's reply with the right tool call.
+    # Cleared (set to ``None``) once the agent commits via ``commit_narrow``.
+    narrow_state: NotRequired[dict | None]
+
+    # Free-text hint handed to the next ``narrow_search`` execution when the
+    # user navigates back to re-narrow via plain chat (e.g. "change the
+    # anonymization to identified"). Consumed once by
+    # ``_seed_initial_user_message`` and cleared on commit.
+    narrow_refine_hint: NotRequired[str | None]
+
     # Supervisor clarification follow-up: set when the supervisor emitted a
     # "Did you mean…?" reply. On the next turn, if the user affirms (yes /
     # correct / …), the supervisor dispatches to the saved candidate intent
@@ -64,6 +78,7 @@ class AppState(TypedDict):
 # Workflow step identifiers
 # ---------------------------------------------------------------------------
 
+RA_STEP_NARROW_SEARCH = "narrow_search"
 RA_STEP_CHOOSE_DOMAIN = "choose_domain"
 RA_STEP_CHOOSE_ANONYMIZATION = "choose_anonymization"
 RA_STEP_SEARCH_PRODUCTS = "search_products"
@@ -73,7 +88,16 @@ RA_STEP_GENERATE_FORM = "generate_dynamic_form"
 RA_STEP_FILL_FORM = "fill_form"
 RA_STEP_SUBMIT = "submit_request"
 
+# ``RA_STEPS_ORDER`` is the canonical linear ordering used by
+# ``compute_downstream_invalidation`` to decide which workflow artifacts to
+# clear when the user navigates back. The default *entry* path skips the
+# chip nodes (``narrow_search`` collects domain + anonymization
+# conversationally instead), but ``choose_domain`` / ``choose_anonymization``
+# remain in the order so that an explicit nav to either one still triggers
+# the same "clear domain → also clear anonymization → also clear search
+# results → …" cascade as before.
 RA_STEPS_ORDER: list[str] = [
+    RA_STEP_NARROW_SEARCH,
     RA_STEP_CHOOSE_DOMAIN,
     RA_STEP_CHOOSE_ANONYMIZATION,
     RA_STEP_SEARCH_PRODUCTS,
@@ -85,6 +109,7 @@ RA_STEPS_ORDER: list[str] = [
 ]
 
 RA_STEP_TO_NODE: dict[str, str] = {
+    RA_STEP_NARROW_SEARCH: "narrow_search",
     RA_STEP_CHOOSE_DOMAIN: "choose_domain",
     RA_STEP_CHOOSE_ANONYMIZATION: "choose_anonymization",
     RA_STEP_SEARCH_PRODUCTS: "search_products",
@@ -151,12 +176,29 @@ class ConfirmationInterrupt(TypedDict):
     prompt_id: str
 
 
+class NarrowMessageInterrupt(TypedDict):
+    """Plain-text conversational prompt emitted by the narrowing subagent.
+
+    Carries no chips, options, or actions — the frontend renders the
+    ``message`` as an ordinary assistant chat bubble. The user replies via
+    the normal chat input; ``chat_service`` wraps that text as a
+    ``Command(resume={"action": "user_message", "text": ...})`` which
+    feeds straight back into the agent loop.
+    """
+
+    type: Literal["narrow_message"]
+    message: str
+    step: str
+    prompt_id: str
+
+
 InterruptPayload = (
     FacetInterrupt
     | ProductSelectionInterrupt
     | CartReviewInterrupt
     | McpAppInterrupt
     | ConfirmationInterrupt
+    | NarrowMessageInterrupt
 )
 
 

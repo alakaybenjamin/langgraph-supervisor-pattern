@@ -55,6 +55,7 @@ from app.graph.state import (
     RA_STEP_CHOOSE_ANONYMIZATION,
     RA_STEP_CHOOSE_DOMAIN,
     RA_STEP_CHOOSE_PRODUCTS,
+    RA_STEP_NARROW_SEARCH,
     AppState,
 )
 
@@ -207,7 +208,9 @@ def nav_intent_from_resume_value(value: Any) -> str | None:
         return None
     action = value.get("action")
     if action == "refine_filters":
-        return RA_STEP_CHOOSE_DOMAIN
+        # "Refine Filters" button routes back through the conversational
+        # narrowing subagent — the chip nodes are no longer a front door.
+        return RA_STEP_NARROW_SEARCH
     if action == "add_more":
         return RA_STEP_CHOOSE_PRODUCTS
     if action == "change_selection":
@@ -418,8 +421,14 @@ WorkflowKind = Literal[
 ]
 
 _NAV_TARGET_MAP: dict[str, str] = {
-    "choose_domain": RA_STEP_CHOOSE_DOMAIN,
-    "choose_anonymization": RA_STEP_CHOOSE_ANONYMIZATION,
+    # All "refine my narrowing" textual nav (change domain / change
+    # anonymization / re-narrow) now routes through the conversational
+    # ``narrow_search`` subagent rather than the legacy chip nodes. The
+    # chip steps stay registered as graph nodes so existing structured
+    # flows (e.g. invalidation rewinds) still work, but any nav by free
+    # text goes through the purely-textual narrowing experience.
+    "choose_domain": RA_STEP_NARROW_SEARCH,
+    "choose_anonymization": RA_STEP_NARROW_SEARCH,
     "choose_products": RA_STEP_CHOOSE_PRODUCTS,
     "view_cart": "view_cart",
 }
@@ -464,7 +473,7 @@ def classify_workflow_text(text: str, *, workflow_summary: str = "") -> dict:
     elif name == "navigate_to_step":
         kind = "nav"
         t = args.get("target") or "choose_domain"
-        extras["nav_target"] = _NAV_TARGET_MAP.get(t, RA_STEP_CHOOSE_DOMAIN)
+        extras["nav_target"] = _NAV_TARGET_MAP.get(t, RA_STEP_NARROW_SEARCH)
     elif name == "resume_workflow":
         kind = "resume"
     elif name == "out_of_scope_workflow":

@@ -10,7 +10,7 @@ two cleaned fields:
 - ``ra_search_query`` — concise keyword string suitable for substring
   search over product title / description. ``'*'`` when no usable
   keywords were present.
-- ``ra_study_id``     — clinical study id (e.g. ``STU-203121``) when it
+- ``ra_study_id``     — clinical study id (e.g. ``dp-501``) when it
   clearly appears in the text, else empty string.
 
 Uses gpt-4o tool-calling (same model as the supervisor) so the extraction

@@ -3,6 +3,7 @@ import {
   ElementRef,
   ViewChild,
   AfterViewChecked,
+  computed,
   inject,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
@@ -40,6 +41,7 @@ import { ChatInputComponent } from './chat-input/chat-input.component';
         @for (msg of stream.messages(); track $index) {
           <app-message
             [msg]="msg"
+            [activePromptId]="activePromptId()"
             (productSelected)="onProductSelected($event)"
             (facetSelected)="onFacetSelected($event)"
             (cartAction)="onCartAction($event)"
@@ -178,6 +180,21 @@ import { ChatInputComponent } from './chat-input/chat-input.component';
 export class ChatComponent implements AfterViewChecked {
   private readonly chatService = inject(ChatService);
   readonly stream = this.chatService.stream;
+
+  /**
+   * Prompt id of the interrupt currently awaiting user input. Falls
+   * back to ``null`` when there's no active interrupt (e.g. mid-FAQ
+   * answer) — every past interactive bubble then renders as
+   * superseded. The MessageComponent uses this to gate its chips and
+   * stamp a "Superseded" badge on bubbles whose interrupt has been
+   * replaced.
+   */
+  readonly activePromptId = computed<string | null>(() => {
+    const v = this.stream.currentInterrupt()?.interrupt_value as
+      | { prompt_id?: string }
+      | undefined;
+    return v?.prompt_id ?? null;
+  });
 
   @ViewChild('messagesArea') private messagesArea!: ElementRef;
 

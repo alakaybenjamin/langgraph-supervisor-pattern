@@ -42,7 +42,7 @@ SAMPLE_PRODUCTS = [
         "product_type": "default",
         "sensitivity": "high",
         "anonymization": "deidentified",
-        "study_id": "STU-203121",
+        "study_id": "dp-501",
         "owner": "Clinical Data Management",
     },
     {
@@ -53,7 +53,7 @@ SAMPLE_PRODUCTS = [
         "product_type": "ddf",
         "sensitivity": "critical",
         "anonymization": "limited",
-        "study_id": "STU-203121",
+        "study_id": "dp-501",
         "owner": "Clinical Data Management",
     },
     {
@@ -75,7 +75,7 @@ SAMPLE_PRODUCTS = [
         "product_type": "ddf",
         "sensitivity": "critical",
         "anonymization": "limited",
-        "study_id": "STU-401052",
+        "study_id": "dp-502",
         "owner": "Pharmacovigilance",
     },
     {
@@ -97,7 +97,7 @@ SAMPLE_PRODUCTS = [
         "product_type": "ddf",
         "sensitivity": "critical",
         "anonymization": "deidentified",
-        "study_id": "STU-558970",
+        "study_id": "dp-503",
         "owner": "RWE Analytics",
     },
     {
@@ -130,7 +130,7 @@ SAMPLE_PRODUCTS = [
         "product_type": "ddf",
         "sensitivity": "critical",
         "anonymization": "deidentified",
-        "study_id": "STU-203121",
+        "study_id": "dp-501",
         "owner": "Genomics Lab",
     },
     {
@@ -351,7 +351,7 @@ def create_server() -> Server:
                                 "study_id": {
                                     "type": "string",
                                     "description": (
-                                        "Clinical study / trial ID (e.g. 'STU-203121'). "
+                                        "Clinical study / trial ID (e.g. 'dp-501'). "
                                         "Case-insensitive substring match."
                                     ),
                                 },

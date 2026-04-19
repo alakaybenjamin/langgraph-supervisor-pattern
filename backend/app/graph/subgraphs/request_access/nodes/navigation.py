@@ -21,6 +21,7 @@ from app.graph.state import (
     RA_STEP_CHOOSE_PRODUCTS,
     RA_STEP_FILL_FORM,
     RA_STEP_GENERATE_FORM,
+    RA_STEP_NARROW_SEARCH,
     RA_STEP_SEARCH_PRODUCTS,
     RA_STEP_SHOW_CART,
     RA_STEP_SUBMIT,
@@ -32,17 +33,33 @@ logger = logging.getLogger(__name__)
 
 
 def compute_downstream_invalidation(step: str) -> dict:
-    """Return state updates clearing artifacts at or after ``step`` (inclusive)."""
+    """Return state updates clearing artifacts at or after ``step`` (inclusive).
+
+    Special case: when ``step == RA_STEP_NARROW_SEARCH`` we preserve
+    ``selected_domains`` / ``selected_anonymization`` so the
+    conversational narrowing agent can see the user's current filters
+    and apply single-facet refinements (e.g. "change anonymization to
+    identified") without losing the rest of the context. The agent's
+    ``commit_narrow`` overwrites these fields authoritatively.
+    """
     try:
         idx = RA_STEPS_ORDER.index(step)
     except ValueError:
         idx = 0
 
     patch: dict = {"invalidated_from_step": step}
+    preserve_facets_for_narrow = step == RA_STEP_NARROW_SEARCH
 
-    if idx <= RA_STEPS_ORDER.index(RA_STEP_CHOOSE_DOMAIN):
+    # Reset the conversational narrowing transcript whenever we rewind
+    # to (or before) the narrowing step.
+    if idx <= RA_STEPS_ORDER.index(RA_STEP_NARROW_SEARCH):
+        patch["narrow_state"] = None
+    if idx <= RA_STEPS_ORDER.index(RA_STEP_CHOOSE_DOMAIN) and not preserve_facets_for_narrow:
         patch["selected_domains"] = []
-    if idx <= RA_STEPS_ORDER.index(RA_STEP_CHOOSE_ANONYMIZATION):
+    if (
+        idx <= RA_STEPS_ORDER.index(RA_STEP_CHOOSE_ANONYMIZATION)
+        and not preserve_facets_for_narrow
+    ):
         patch["selected_anonymization"] = None
     if idx <= RA_STEPS_ORDER.index(RA_STEP_SEARCH_PRODUCTS):
         patch["product_search_results"] = []

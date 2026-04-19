@@ -30,10 +30,11 @@ def _ainvoke(graph: Any, payload: Any, cfg: dict) -> Any:
 import app.graph.router_logic as _router_logic
 import app.graph.subgraphs.request_access.nodes.extract_search_intent as _extract_mod
 import app.graph.subgraphs.request_access.nodes.mcp_prefetch as _prefetch_mod
+import app.graph.subgraphs.request_access.nodes.narrow_search as _narrow_mod
 import app.graph.subgraphs.request_access.nodes.steps as _steps_mod
 from app.graph.faq_agents import _extract_question, faq_kb_agent, general_faq_tavily_agent
 from app.graph.parent_supervisor import recover_state_node, supervisor_router
-from app.graph.state import AppState
+from app.graph.state import AppState, RA_STEP_CHOOSE_DOMAIN
 from app.graph.subgraphs.request_access import build_request_access_subgraph
 
 from langgraph.types import Command
@@ -131,6 +132,30 @@ def _patch_products_search() -> None:
         return {}
 
     _prefetch_mod.mcp_search_client.list_facets = _no_facets  # type: ignore[attr-defined]
+
+    # Force ``narrow_search`` to commit immediately so this regression test
+    # exercises the chip-flow path it was originally written against. The
+    # FAQ-handoff behaviour we're verifying lives downstream of narrowing.
+    class _StubNarrowLLM:
+        async def ainvoke(self, messages: list[Any]) -> AIMessage:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "commit_narrow",
+                        "args": {
+                            "search_text": "*",
+                            "domain": "",
+                            "anonymization": "",
+                            "study_id": "",
+                        },
+                        "id": "tc-commit",
+                    }
+                ],
+            )
+
+    _narrow_mod._llm = None  # type: ignore[attr-defined]
+    _narrow_mod._get_llm = lambda: _StubNarrowLLM()  # type: ignore[assignment]
 
     _PATCHED = True
 
@@ -261,6 +286,7 @@ def test_faq_after_resume_uses_current_question_not_previous() -> None:
             "user_id": "u",
             "active_flow": "request_access",
             "ra_search_query": "I need access to some data",
+            "current_step": RA_STEP_CHOOSE_DOMAIN,
         },
         cfg,
     )
@@ -337,6 +363,7 @@ def test_extract_question_from_live_state_after_handoff() -> None:
             "user_id": "u",
             "active_flow": "request_access",
             "ra_search_query": "need access",
+            "current_step": RA_STEP_CHOOSE_DOMAIN,
         },
         cfg,
     )

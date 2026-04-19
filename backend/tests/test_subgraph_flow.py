@@ -30,9 +30,10 @@ def _ainvoke(graph: Any, payload: Any, cfg: dict) -> Any:
 import app.graph.router_logic as _router_logic
 import app.graph.subgraphs.request_access.nodes.extract_search_intent as _extract_mod
 import app.graph.subgraphs.request_access.nodes.mcp_prefetch as _prefetch_mod
+import app.graph.subgraphs.request_access.nodes.narrow_search as _narrow_mod
 import app.graph.subgraphs.request_access.nodes.steps as _steps_mod
 from app.graph.subgraphs.request_access import build_request_access_subgraph
-from app.graph.state import AppState, RA_STEP_CHOOSE_DOMAIN
+from app.graph.state import AppState, RA_STEP_CHOOSE_DOMAIN, RA_STEP_NARROW_SEARCH
 
 
 def _stub_ai_message(tool_calls: list[dict[str, Any]] | None = None) -> AIMessage:
@@ -74,6 +75,53 @@ class _StubWorkflowLLM:
 def _install_stub_llms() -> None:
     _router_logic._workflow_llm = _StubWorkflowLLM()
     _router_logic._fresh_llm = _StubWorkflowLLM()
+
+
+class _StubNarrowLLM:
+    """Pretends to be the bound-tools LLM inside ``narrow_search``.
+
+    Always returns an ``AIMessage`` with a ``commit_narrow`` tool call so
+    the agent commits on the very first turn — useful for chip-flow and
+    downstream tests that don't want to script a multi-turn narrowing
+    conversation.
+    """
+
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "commit_narrow",
+                    "args": {
+                        "search_text": "*",
+                        "domain": "",
+                        "anonymization": "",
+                        "study_id": "",
+                    },
+                    "id": "tc-commit",
+                }
+            ],
+        )
+
+
+def _install_narrow_stub_commit() -> None:
+    """Force ``narrow_search`` to commit immediately (no LLM, no questions)."""
+    _narrow_mod._llm = None  # type: ignore[attr-defined]
+    _narrow_mod._get_llm = lambda: _StubNarrowLLM()  # type: ignore[assignment]
+
+
+def _initial_chip_state(thread_id: str) -> dict:
+    """Initial state that pins the legacy chip path (skips ``narrow_search``).
+
+    Done by setting ``current_step=choose_domain``; ``_dispatch_fresh`` will
+    then route to the chip node before the narrowing subagent runs.
+    """
+    return {
+        "messages": [],
+        "thread_id": thread_id,
+        "user_id": "u",
+        "current_step": RA_STEP_CHOOSE_DOMAIN,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -150,6 +198,7 @@ def _parent_graph() -> Any:
 
     _patch_search()
     _install_stub_llms()
+    _install_narrow_stub_commit()
     ra_sub = build_request_access_subgraph()
     b = StateGraph(AppState)
     b.add_node("recover_state", recover)
@@ -187,10 +236,48 @@ def _pending_interrupt(graph: Any, cfg: dict) -> dict | None:
 # --------------------------------------------------------------------------- #
 
 
-def test_first_turn_interrupts_on_choose_domain() -> None:
+def test_default_first_turn_interrupts_on_narrow_message() -> None:
+    """The new default flow runs the conversational narrowing subagent first.
+
+    The chip-based ``choose_domain`` step is no longer the entry point —
+    the narrowing subagent is. This test verifies that with no
+    ``current_step`` pin, a fresh thread pauses on a ``narrow_message``
+    interrupt instead. We let the LLM behave naturally here by using a
+    scripted variant that asks one question.
+    """
+
+    class _AskOnceLLM:
+        async def ainvoke(self, messages: list[Any]) -> AIMessage:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "ask_user",
+                        "args": {"message": "Which domain are you interested in?"},
+                        "id": "tc-ask-1",
+                    }
+                ],
+            )
+
+    _narrow_mod._llm = None  # type: ignore[attr-defined]
+    _narrow_mod._get_llm = lambda: _AskOnceLLM()  # type: ignore[assignment]
+    g = _parent_graph()  # NOTE: ``_parent_graph`` re-installs the commit stub.
+    # Re-override after _parent_graph re-installed the commit stub.
+    _narrow_mod._get_llm = lambda: _AskOnceLLM()  # type: ignore[assignment]
+    cfg = {"configurable": {"thread_id": "t-narrow-1"}}
+    _ainvoke(g, {"messages": [], "thread_id": "t-narrow-1", "user_id": "u"}, cfg)
+
+    val = _pending_interrupt(g, cfg)
+    assert val is not None, "expected the narrowing subagent to interrupt"
+    assert val["type"] == "narrow_message"
+    assert val["step"] == RA_STEP_NARROW_SEARCH
+    assert "domain" in (val.get("message") or "").lower()
+
+
+def test_chip_first_turn_interrupts_on_choose_domain() -> None:
     g = _parent_graph()
     cfg = {"configurable": {"thread_id": "t1"}}
-    _ainvoke(g, {"messages": [], "thread_id": "t1", "user_id": "u"}, cfg)
+    _ainvoke(g, _initial_chip_state("t1"), cfg)
 
     val = _pending_interrupt(g, cfg)
     assert val is not None
@@ -199,10 +286,10 @@ def test_first_turn_interrupts_on_choose_domain() -> None:
     assert val["step"] == RA_STEP_CHOOSE_DOMAIN
 
 
-def test_resume_with_facet_answer_advances_to_anonymization() -> None:
+def test_chip_resume_with_facet_answer_advances_to_anonymization() -> None:
     g = _parent_graph()
     cfg = {"configurable": {"thread_id": "t2"}}
-    _ainvoke(g, {"messages": [], "thread_id": "t2", "user_id": "u"}, cfg)
+    _ainvoke(g, _initial_chip_state("t2"), cfg)
     _ainvoke(g, Command(resume={"facet": "domain", "value": "commercial"}), cfg)
 
     sv = _subgraph_values(g, cfg)
@@ -213,10 +300,10 @@ def test_resume_with_facet_answer_advances_to_anonymization() -> None:
     assert val["facet"] == "anonymization"
 
 
-def test_resume_past_anonymization_runs_search_and_pauses_on_products() -> None:
+def test_chip_resume_past_anonymization_runs_search_and_pauses_on_products() -> None:
     g = _parent_graph()
     cfg = {"configurable": {"thread_id": "t3"}}
-    _ainvoke(g, {"messages": [], "thread_id": "t3", "user_id": "u"}, cfg)
+    _ainvoke(g, _initial_chip_state("t3"), cfg)
     _ainvoke(g, Command(resume={"facet": "domain", "value": "commercial"}), cfg)
     _ainvoke(g, Command(resume={"facet": "anonymization", "value": "deidentified"}), cfg)
 
@@ -229,10 +316,38 @@ def test_resume_past_anonymization_runs_search_and_pauses_on_products() -> None:
     assert val["type"] == "product_selection"
 
 
-def test_navigation_clears_downstream_state() -> None:
+def test_navigation_routes_refine_intent_through_narrow_search() -> None:
+    """Textual refine intents ("change domain", "change anonymization") now
+    route through the conversational narrowing subagent.
+
+    Contract:
+      * Downstream artifacts (search results, cart) are cleared so the
+        flow restarts at narrowing.
+      * Already-selected facets are PRESERVED — the agent needs them as
+        context for single-facet refinements. ``commit_narrow`` will
+        overwrite authoritatively.
+      * The user's raw text is stashed as ``narrow_refine_hint`` so the
+        agent can act on the intent without re-asking.
+    """
+
+    # Script narrow_search to ask one question so we can verify we landed
+    # there (rather than the chip picker).
+    class _AskOnceLLM:
+        async def ainvoke(self, messages: list[Any]) -> AIMessage:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "ask_user",
+                        "args": {"message": "Which domain do you want?"},
+                        "id": "tc-ask",
+                    }
+                ],
+            )
+
     g = _parent_graph()
     cfg = {"configurable": {"thread_id": "t4"}}
-    _ainvoke(g, {"messages": [], "thread_id": "t4", "user_id": "u"}, cfg)
+    _ainvoke(g, _initial_chip_state("t4"), cfg)
     _ainvoke(g, Command(resume={"facet": "domain", "value": "commercial"}), cfg)
     _ainvoke(g, Command(resume={"facet": "anonymization", "value": "deidentified"}), cfg)
 
@@ -240,25 +355,33 @@ def test_navigation_clears_downstream_state() -> None:
     assert before.get("selected_anonymization") == "deidentified"
     assert before.get("product_search_results")
 
+    # Swap narrow_search's stub to ask-once for this phase of the test.
+    _narrow_mod._get_llm = lambda: _AskOnceLLM()  # type: ignore[assignment]
+
     _ainvoke(g, 
         Command(resume={"action": "user_message", "text": "change domain"}),
         cfg,
     )
 
     after = _subgraph_values(g, cfg)
-    assert after.get("selected_domains") == []
-    assert after.get("selected_anonymization") is None
+    # Facets preserved for the narrowing agent's context.
+    assert after.get("selected_domains") == ["commercial"]
+    assert after.get("selected_anonymization") == "deidentified"
+    # Downstream artifacts cleared.
     assert after.get("product_search_results") == []
+    # User's raw text threaded into the hint for the seed message.
+    assert after.get("narrow_refine_hint") == "change domain"
 
+    # We're paused on a narrow_message (conversational), NOT a chip picker.
     val = _pending_interrupt(g, cfg)
     assert val is not None
-    assert val["facet"] == "domain"
+    assert val["type"] == "narrow_message"
 
 
 def test_user_text_side_message_keeps_workflow_paused() -> None:
     g = _parent_graph()
     cfg = {"configurable": {"thread_id": "t6"}}
-    _ainvoke(g, {"messages": [], "thread_id": "t6", "user_id": "u"}, cfg)
+    _ainvoke(g, _initial_chip_state("t6"), cfg)
 
     # Send plain chat text while paused on choose_domain.
     _ainvoke(g, 
@@ -283,7 +406,7 @@ def test_user_text_side_message_keeps_workflow_paused() -> None:
 def test_faq_handoff_preserves_workflow_state() -> None:
     g = _parent_graph()
     cfg = {"configurable": {"thread_id": "t5"}}
-    _ainvoke(g, {"messages": [], "thread_id": "t5", "user_id": "u"}, cfg)
+    _ainvoke(g, _initial_chip_state("t5"), cfg)
     _ainvoke(g, Command(resume={"facet": "domain", "value": "commercial"}), cfg)
 
     result = _ainvoke(

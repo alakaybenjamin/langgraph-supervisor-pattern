@@ -30,6 +30,7 @@ from app.graph.state import (
     RA_STEP_CHOOSE_PRODUCTS,
     RA_STEP_FILL_FORM,
     RA_STEP_GENERATE_FORM,
+    RA_STEP_NARROW_SEARCH,
     RA_STEP_SEARCH_PRODUCTS,
     RA_STEP_SHOW_CART,
     RA_STEP_SUBMIT,
@@ -49,6 +50,9 @@ from app.graph.subgraphs.request_access.nodes.extract_search_intent import (
 )
 from app.graph.subgraphs.request_access.nodes.mcp_prefetch import (
     mcp_prefetch_facets,
+)
+from app.graph.subgraphs.request_access.nodes.narrow_search import (
+    narrow_search,
 )
 from app.graph.subgraphs.request_access.nodes.steps import (
     choose_anonymization,
@@ -73,36 +77,36 @@ logger = logging.getLogger(__name__)
 def _dispatch_fresh(state: AppState) -> str:
     """Return the next step node to run when no resume value is present.
 
-    On first entry (no selected_domains, no facet cache yet) we route
-    through ``mcp_prefetch_facets`` so downstream chips render with the
-    MCP server's canonical ids/labels. Once the cache is populated the
-    prefetch node short-circuits.
+    Default path: ``mcp_prefetch_facets`` → ``narrow_search`` →
+    ``extract_search_intent`` → ``search_products`` → ``choose_products``
+    → … . The chip nodes (``choose_domain`` / ``choose_anonymization``)
+    are reachable only via an explicit ``current_step`` set by a nav
+    intent — they are no longer in the default story.
 
-    Immediately before ``search_products`` we route through
-    ``extract_search_intent`` so the user's free-text query is normalized
-    and any embedded study id is lifted into ``ra_study_id``.
+    The prefetch hop runs once per session so that, even though the
+    narrowing subagent talks in plain text, it still has the canonical
+    facet ids in its system prompt and ``commit_narrow`` writes
+    server-recognized values.
     """
     cs = state.get("current_step") or ""
-    # Hop into prefetch first when a facet UI is about to render and the
-    # cache is empty.
-    if not state.get("mcp_facet_cache") and (
-        cs == RA_STEP_CHOOSE_DOMAIN or not state.get("selected_domains")
-    ):
+    # Hop into prefetch the FIRST time we enter (cache key missing) and
+    # we haven't yet committed a narrowing. The prefetch node always
+    # writes some value (even a sentinel on failure) so this branch is
+    # taken at most once per session — no risk of looping back here.
+    if state.get("mcp_facet_cache") is None and not state.get("product_search_results"):
         return "mcp_prefetch_facets"
 
-    # Remap raw step ids so search always flows through the extractor.
+    # Remap raw step ids so search always flows through the extractor
+    # (catches state restored from a thread that committed without going
+    # through the narrowing agent).
     if cs == RA_STEP_SEARCH_PRODUCTS:
         return "extract_search_intent"
     if cs in RA_STEP_TO_NODE:
         return RA_STEP_TO_NODE[cs]
 
-    # Infer from state when starting fresh
-    if not state.get("selected_domains"):
-        return "choose_domain"
-    if not state.get("selected_anonymization"):
-        return "choose_anonymization"
+    # Infer from state when starting fresh — narrowing comes first.
     if not state.get("product_search_results"):
-        return "extract_search_intent"
+        return "narrow_search"
     if not state.get("selected_products"):
         return "choose_products"
     if not state.get("generated_form_schema"):
@@ -168,7 +172,7 @@ def _apply_structured_answer(
                 "pending_prompt": None,
                 "awaiting_input": False,
                 "last_resume_value": None,
-                "nav_intent": RA_STEP_CHOOSE_DOMAIN,
+                "nav_intent": RA_STEP_NARROW_SEARCH,
             },
             "next_node": "handle_navigation",
         }
@@ -205,7 +209,7 @@ def _apply_structured_answer(
                 "pending_prompt": None,
                 "awaiting_input": False,
                 "last_resume_value": None,
-                "nav_intent": RA_STEP_CHOOSE_DOMAIN,
+                "nav_intent": RA_STEP_NARROW_SEARCH,
             },
             "next_node": "handle_navigation",
         }
@@ -347,16 +351,25 @@ def route_request_access_turn(state: AppState) -> Command | dict:
         )
 
     if kind == "nav":
-        intent = result.get("nav_target") or RA_STEP_CHOOSE_DOMAIN
-        return Command(
-            update={
-                "nav_intent": intent,
-                "last_resume_value": None,
-                "last_workflow_node": "route_request_access_turn",
-                **({"messages": extra_messages} if extra_messages else {}),
-            },
-            goto="handle_navigation",
-        )
+        intent = result.get("nav_target") or RA_STEP_NARROW_SEARCH
+        update: dict[str, Any] = {
+            "nav_intent": intent,
+            "last_resume_value": None,
+            "last_workflow_node": "route_request_access_turn",
+        }
+        # When the user is navigating back to re-narrow via plain chat
+        # (e.g. "change anonymization to identified"), stash their raw
+        # text so ``narrow_search`` can seed its agent loop with the
+        # actual intent instead of having to re-ask a generic question.
+        if intent == RA_STEP_NARROW_SEARCH and isinstance(value, dict):
+            text = value.get("text")
+            if isinstance(text, str) and text.strip():
+                update["narrow_refine_hint"] = text.strip()
+        elif intent == RA_STEP_NARROW_SEARCH and isinstance(value, str) and value.strip():
+            update["narrow_refine_hint"] = value.strip()
+        if extra_messages:
+            update["messages"] = extra_messages
+        return Command(update=update, goto="handle_navigation")
 
     if kind == "answer" and isinstance(value, dict):
         merged = _apply_structured_answer(
@@ -516,6 +529,10 @@ def build_request_access_subgraph() -> Any:
 
     # Business steps
     builder.add_node("mcp_prefetch_facets", mcp_prefetch_facets)
+    # Default narrowing path — purely conversational subagent that
+    # supersedes the chip-based choose_domain/choose_anonymization in
+    # the linear flow. The chip nodes remain registered as nav targets.
+    builder.add_node("narrow_search", narrow_search)
     builder.add_node("choose_domain", choose_domain)
     builder.add_node("choose_anonymization", choose_anonymization)
     builder.add_node("extract_search_intent", extract_search_intent_node)
@@ -540,6 +557,7 @@ def build_request_access_subgraph() -> Any:
         "invalidate_downstream_state",
         "goto_target_step",
         "mcp_prefetch_facets",
+        "narrow_search",
         "choose_domain",
         "choose_anonymization",
         "extract_search_intent",
