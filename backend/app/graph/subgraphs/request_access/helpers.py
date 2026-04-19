@@ -16,6 +16,11 @@ import logging
 import uuid
 from typing import Any
 
+from app.a2ui import (
+    build_facet_selection_surface,
+    build_product_selection_surface,
+)
+from app.core.config import settings
 from app.graph.subgraphs.request_access.prompts import (
     FORM_SECTION_TITLE_TEMPLATE,
 )
@@ -342,11 +347,40 @@ def build_emit_ui_payload(
         allow_multi_select=allow_multi_select,
     )
 
+    pid = prompt_id or str(uuid.uuid4())
+
+    # A2UI rollout branch: when this interrupt type is enabled, build an
+    # A2UI v0.9 surface instead of the legacy payload. All interrupt types
+    # fall back to the legacy contract by default; ``A2UI_ENABLED_INTERRUPTS``
+    # opts individual types in per-environment. The frontend's
+    # ``handleA2uiAction`` adapter normalizes A2UI events back to the
+    # legacy ``resume_data`` shapes, so ``_apply_structured_answer`` sees
+    # identical inputs either way.
+    if ui_type in settings.a2ui_enabled_interrupts:
+        if ui_type == "facet_selection" and facet and options is not None:
+            return build_facet_selection_surface(
+                step=step,
+                prompt=message,
+                facet=facet,
+                options=options,
+                prompt_id=pid,
+            )
+        if ui_type == "product_selection":
+            return build_product_selection_surface(
+                step=step,
+                prompt=message,
+                products=normalize_products(products or []),
+                prompt_id=pid,
+            )
+        # Other ui_types arrive here once their builders land (Phases 5-6).
+        # Fall through to the legacy payload rather than 500-ing so partial
+        # rollouts stay safe.
+
     payload: dict[str, Any] = {
         "type": ui_type,
         "message": message,
         "step": step,
-        "prompt_id": prompt_id or str(uuid.uuid4()),
+        "prompt_id": pid,
     }
     if options is not None:
         payload["options"] = options

@@ -100,12 +100,38 @@ export interface McpAppInterrupt extends InterruptBase {
   context?: Record<string, unknown>;
 }
 
+/**
+ * A2UI v0.9 interrupt: the backend emits a list of protocol messages
+ * (createSurface + updateDataModel + updateComponents) rather than a
+ * ui_type-specific shape. The frontend pipes these through
+ * ``A2uiRendererService.processMessages`` and the user-authored action
+ * is translated back to the legacy ``resume_data`` shape by
+ * ``ChatService.handleA2uiAction`` — driven by ``resume_hint``.
+ *
+ * Messages are kept as ``unknown[]`` rather than the SDK's ``A2uiMessage``
+ * union because this model is serialized over the wire; the renderer
+ * owns runtime validation.
+ */
+export interface A2uiInterrupt extends InterruptBase {
+  type: 'a2ui';
+  surface_id: string;
+  catalog_id: string;
+  resume_hint: A2uiResumeHint;
+  a2ui_messages: unknown[];
+}
+
+/** Routing metadata consumed by the frontend action adapter. */
+export type A2uiResumeHint =
+  | { ui_type: 'facet_selection'; facet: string }
+  | { ui_type: 'product_selection' };
+
 export type InterruptValue =
   | FacetSelectionInterrupt
   | ProductSelectionInterrupt
   | CartReviewInterrupt
   | ConfirmationInterrupt
-  | McpAppInterrupt;
+  | McpAppInterrupt
+  | A2uiInterrupt;
 
 export type InterruptType = InterruptValue['type'];
 
@@ -124,6 +150,7 @@ export const INTERRUPT_REQUIRED_FIELDS: {
   cart_review: ['type', 'products', 'actions', 'step'],
   confirmation: ['type', 'step'],
   mcp_app: ['type', 'resource_uri', 'step'],
+  a2ui: ['type', 'surface_id', 'catalog_id', 'resume_hint', 'a2ui_messages', 'step'],
 } as const;
 
 /**

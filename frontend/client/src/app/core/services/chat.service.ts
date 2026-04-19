@@ -1,4 +1,5 @@
 import { Injectable, Signal, signal } from '@angular/core';
+import type { A2uiClientAction } from '@a2ui/web_core/v0_9';
 import {
   ChatMessage,
   ChatRequest,
@@ -9,6 +10,7 @@ import {
   SSEInterruptEvent,
   SSETokenEvent,
   StreamSubmitInput,
+  hasInterruptType,
 } from '../models/chat.model';
 import { environment } from '../../../environments/environment';
 import { v4 as uuidv4 } from 'uuid';
@@ -136,6 +138,87 @@ export class ChatService {
   /** @deprecated Use `stream.switchThread(null)`. */
   newThread(): void {
     this.switchThread(null);
+  }
+
+  // --------------------------------------------------------------------
+  // A2UI action bridge
+  // --------------------------------------------------------------------
+
+  /**
+   * Translate an A2UI client action into the legacy ``resume_data`` shape
+   * that the LangGraph subgraph's ``_apply_structured_answer`` expects,
+   * and submit it. This is the single place where A2UI-authored events
+   * meet the existing resume-routing contract — keep it side-effect free
+   * aside from the final ``stream.submit`` so multi-phase rollouts stay
+   * reversible behind the backend feature flag.
+   *
+   * The correct translation for any given action is derived from the
+   * current interrupt's ``resume_hint`` (set by the backend builder),
+   * not from the action name alone, so that a single event name like
+   * ``facet.select`` can participate in any facet question.
+   */
+  handleA2uiAction(action: A2uiClientAction): void {
+    const interrupt = this.currentInterrupt()?.interrupt_value;
+    if (!interrupt || !hasInterruptType(interrupt, 'a2ui')) {
+      console.warn(
+        '[ChatService] A2UI action received with no matching interrupt:',
+        action,
+      );
+      return;
+    }
+
+    const hint = interrupt.resume_hint;
+    switch (hint.ui_type) {
+      case 'facet_selection': {
+        const ctx = action.context ?? {};
+        const value = typeof ctx['value'] === 'string' ? ctx['value'] : undefined;
+        if (!value) {
+          console.warn(
+            '[ChatService] A2UI facet.select action missing context.value:',
+            action,
+          );
+          return;
+        }
+        void this.submit({
+          resume: { facet: hint.facet, value },
+        });
+        return;
+      }
+      case 'product_selection': {
+        // The ProductPicker fires four events; only three are
+        // user-actionable. ``product.toggle`` is informational and the
+        // adapter intentionally ignores it — selection state lives in
+        // the renderer until the user hits the primary button.
+        const eventName = action.name;
+        const ctx = action.context ?? {};
+        switch (eventName) {
+          case 'product.confirm': {
+            const products = Array.isArray(ctx['products'])
+              ? (ctx['products'] as Record<string, unknown>[])
+              : [];
+            void this.submit({
+              resume: { action: 'select', products },
+            });
+            return;
+          }
+          case 'product.open_search':
+            void this.submit({ resume: { action: 'open_search' } });
+            return;
+          case 'product.refine':
+            void this.submit({ resume: { action: 'refine_filters' } });
+            return;
+          case 'product.toggle':
+            return;
+          default:
+            console.warn(
+              '[ChatService] Unhandled A2UI product event:',
+              eventName,
+              action,
+            );
+            return;
+        }
+      }
+    }
   }
 
   // --------------------------------------------------------------------

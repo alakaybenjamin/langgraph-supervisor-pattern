@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://datagov.local/a2ui/v1/catalog.json",
+  "title": "Data Governance Catalog v1",
+  "description": "Custom A2UI v0.9 catalog for the Data Governance chat. Declares the components that back the LangGraph request-access interrupts so the frontend can render them through the official A2UI renderer. Keep component names in sync with the Angular catalog registration in frontend/client/src/app/a2ui/datagov-catalog.ts.",
+  "catalogId": "datagov.local:v1",
+  "components": {
+    "FacetChipRow": {
+      "type": "object",
+      "description": "Row of selectable chips used for single-facet questions such as 'Which domain?' or 'What anonymization level do you need?'. Fires the ``facet.select`` event with the clicked chip's id in ``context.value``.",
+      "allOf": [
+        { "$ref": "common_types.json#/$defs/ComponentCommon" },
+        {
+          "type": "object",
+          "properties": {
+            "component": { "const": "FacetChipRow" },
+            "prompt": {
+              "$ref": "common_types.json#/$defs/DynamicString",
+              "description": "Human-readable prompt shown above the chip row."
+            },
+            "facet": {
+              "$ref": "common_types.json#/$defs/DynamicString",
+              "description": "Facet id (``domain`` / ``product_type`` / ``anonymization``) echoed back in the select event."
+            },
+            "options": {
+              "description": "Chip list bound to a data-model path pointing at an array of ``{id, label}`` objects.",
+              "$ref": "common_types.json#/$defs/DataBinding"
+            },
+            "onSelect": {
+              "$ref": "common_types.json#/$defs/Action",
+              "description": "Action fired when the user taps a chip. The Angular implementation merges ``context.value`` = clicked chip id at dispatch time."
+            }
+          },
+          "required": ["component", "facet", "options", "onSelect"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "ProductPicker": {
+      "type": "object",
+      "description": "Multi-select product picker. Renders one card per product (id, type pill, content snippet, domain · sensitivity) plus three action buttons. Selection state is owned by the renderer (not round-tripped through the agent on every click) and only the final picks are emitted via the ``onConfirm`` action. Used as the A2UI v0.9 replacement for the legacy ``product_selection`` interrupt.",
+      "allOf": [
+        { "$ref": "common_types.json#/$defs/ComponentCommon" },
+        {
+          "type": "object",
+          "properties": {
+            "component": { "const": "ProductPicker" },
+            "products": {
+              "description": "Data-model path to the array of normalized product dicts ({content, metadata: {id, product_type, domain, sensitivity}, score}).",
+              "type": "string",
+              "pattern": "^/.*$"
+            },
+            "confirmLabelTemplate": {
+              "$ref": "common_types.json#/$defs/DynamicString",
+              "description": "Template for the primary button label. Token ``{count}`` is replaced with the current selection count by the renderer."
+            },
+            "onToggle": {
+              "$ref": "common_types.json#/$defs/Action",
+              "description": "Optional informational action fired on each card click; the renderer merges ``context.value`` = clicked product id. The chat host currently ignores this — selection lives client-side until ``onConfirm``."
+            },
+            "onConfirm": {
+              "$ref": "common_types.json#/$defs/Action",
+              "description": "Action fired when the primary button is tapped. The renderer merges ``context.products`` = the full list of selected product dicts at dispatch time."
+            },
+            "onOpenSearch": {
+              "$ref": "common_types.json#/$defs/Action",
+              "description": "Action fired when the ``Open Search Panel`` button is tapped."
+            },
+            "onRefine": {
+              "$ref": "common_types.json#/$defs/Action",
+              "description": "Action fired when the ``Refine Filters`` button is tapped."
+            }
+          },
+          "required": ["component", "products", "onConfirm"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "MessageBanner": {
+      "type": "object",
+      "description": "Single-line banner used for lightweight status / intro lines above an input. Purely presentational.",
+      "allOf": [
+        { "$ref": "common_types.json#/$defs/ComponentCommon" },
+        {
+          "type": "object",
+          "properties": {
+            "component": { "const": "MessageBanner" },
+            "text": {
+              "$ref": "common_types.json#/$defs/DynamicString",
+              "description": "Banner text. Supports the same markdown subset as the legacy chat bubbles."
+            },
+            "variant": {
+              "type": "string",
+              "enum": ["info", "warning", "success"],
+              "default": "info"
+            }
+          },
+          "required": ["component", "text"]
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  }
+}

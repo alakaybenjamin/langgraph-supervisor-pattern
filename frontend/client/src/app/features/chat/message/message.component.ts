@@ -1,6 +1,7 @@
 import { Component, Input, Output, EventEmitter } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import {
+  A2uiInterrupt,
   ActionButton,
   ChatMessage,
   FacetOption,
@@ -10,11 +11,12 @@ import {
   asInterrupt,
   hasInterruptType,
 } from '../../../core/models/chat.model';
+import { A2uiSurfaceComponent } from '../a2ui-surface/a2ui-surface.component';
 
 @Component({
   selector: 'app-message',
   standalone: true,
-  imports: [CommonModule],
+  imports: [CommonModule, A2uiSurfaceComponent],
   template: `
     <div class="message" [class]="msg.role">
       <div class="avatar">
@@ -22,6 +24,13 @@ import {
       </div>
       <div class="bubble">
         <div class="content" [innerHTML]="formatContent(msg.content)"></div>
+
+        <!-- A2UI v0.9 surface (opt-in per interrupt type via backend flag). -->
+        @if (a2uiInterrupt(); as a2ui) {
+          @if (!resolved) {
+            <app-a2ui-surface [interrupt]="a2ui" />
+          }
+        }
 
         <!-- Facet selection: domain / type chips -->
         @if (facetOptions().length > 0 && !resolved) {
@@ -491,6 +500,15 @@ export class MessageComponent {
 
   facetOptions(): FacetOption[] {
     return this.interrupt('facet_selection')?.options ?? [];
+  }
+
+  /**
+   * Expose the typed A2UI interrupt to the template when this message
+   * carries one, so the ``@if (a2uiInterrupt(); as a2ui)`` branch can
+   * bind directly without extra narrowing.
+   */
+  a2uiInterrupt(): A2uiInterrupt | null {
+    return this.interrupt('a2ui');
   }
 
   isProductSelection(): boolean {

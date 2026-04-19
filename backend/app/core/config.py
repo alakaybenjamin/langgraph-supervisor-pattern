@@ -52,6 +52,21 @@ class Settings(BaseSettings):
     MCP_SEARCH_URL: str = "http://localhost:8000/mcp/search-app"
     MCP_SEARCH_TIMEOUT_SECONDS: float = 10.0
 
+    # --- A2UI v0.9 rollout ---------------------------------------------------
+    # Comma-separated interrupt types (``facet_selection``, ``product_selection``,
+    # ``cart_review``, ``confirmation``) to render through the A2UI renderer.
+    # Empty means legacy path for everything, which is the default so we can
+    # ship the A2UI plumbing dark and turn it on per-environment.
+    A2UI_ENABLED_INTERRUPTS: str = ""
+
+    @property
+    def a2ui_enabled_interrupts(self) -> set[str]:
+        """@brief Parsed set of ui_types that should render via A2UI."""
+        raw = (self.A2UI_ENABLED_INTERRUPTS or "").strip()
+        if not raw:
+            return set()
+        return {item.strip() for item in raw.split(",") if item.strip()}
+
     @model_validator(mode="after")
     def _check_provider_credentials(self) -> Settings:
         if self.LLM_PROVIDER == "openai" and not self.OPENAI_API_KEY:

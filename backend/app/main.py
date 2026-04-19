@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.deps import set_graph
 from app.api.routes.chat import router as chat_router
@@ -14,6 +16,8 @@ from app.graph.builder import build_graph, shutdown_graph
 from app.mcp.registry import mount_mcp_servers, shutdown_mcp_servers, startup_mcp_servers
 
 logger = logging.getLogger(__name__)
+
+A2UI_CATALOGS_DIR = Path(__file__).parent / "a2ui" / "catalogs"
 
 
 @asynccontextmanager
@@ -51,5 +55,15 @@ app.add_middleware(
 
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(chat_router, prefix="/api/v1")
+
+# Serve the custom A2UI v0.9 catalog(s) so the Angular renderer (and any
+# LLM prompted through A2uiSchemaManager) can fetch them by URL. Paths
+# here match the catalog id's local URL in
+# ``backend/app/a2ui/catalogs/datagov-v1.json``.
+app.mount(
+    "/a2ui/catalogs",
+    StaticFiles(directory=A2UI_CATALOGS_DIR),
+    name="a2ui-catalogs",
+)
 
 mount_mcp_servers(app)
