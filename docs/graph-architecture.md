@@ -11,7 +11,7 @@ flowchart TB
 
     subgraph PARENT["Parent Graph - Supervisor Router"]
         direction TB
-        SUPERVISOR["supervisor_node\nLLM: gpt-4o-mini\nRoutes user intent via tool calls"]
+        SUPERVISOR["supervisor_node\nLLM: gpt-4o\nRoutes user intent via tool calls"]
 
         SUPERVISOR -->|"tool: start_access_request"| CMD_RA["Command: request_access"]
         SUPERVISOR -->|"tool: answer_question"| CMD_FAQ["Command: faq"]
@@ -45,13 +45,23 @@ flowchart TB
         RA_START((S))
         RA_END((E))
 
-        RA_START --> NARROW
+        RA_START --> EXTRACT
 
-        NARROW["narrow_node\nSelect Domain then Type\ninterrupt: facet_selection x2"]
-        INT_NARROW1>"PAUSE: Domain chips\nR and D, Commercial, Safety, HR"]
-        INT_NARROW2>"PAUSE: Type chips\nDDF, Default, Onyx, Any"]
-        NARROW --- INT_NARROW1
-        NARROW --- INT_NARROW2
+        EXTRACT["extract_search_intent\nNormalises free-text query\nLifts study_id (dp-NNN)"]
+        PREFETCH["mcp_prefetch_facets\nFetches canonical chip ids\nfrom search MCP (cached once)"]
+        EXTRACT --> PREFETCH
+        PREFETCH --> NARROW
+
+        NARROW["narrow_search\nConversational subagent\nReAct loop: ask_user / commit_narrow\ninterrupt: narrow_message"]
+        INT_NARROW>"PAUSE: Plain assistant chat bubble\nUser replies via normal chat input\n(wrapped as Command(resume))"]
+        NARROW --- INT_NARROW
+
+        CHIP_DOMAIN["choose_domain (nav-only)\ninterrupt: facet_selection"]
+        CHIP_ANON["choose_anonymization (nav-only)\ninterrupt: facet_selection"]
+        INT_CHIP1>"PAUSE: Domain chips\nReachable only via nav_intent"]
+        INT_CHIP2>"PAUSE: Anonymization chips\nReachable only via nav_intent"]
+        CHIP_DOMAIN --- INT_CHIP1
+        CHIP_ANON --- INT_CHIP2
 
         SHOW["show_results_node\nSearch ChromaDB + display cards\ninterrupt: product_selection"]
         SEARCH_SVC[("SearchService\nChromaDB")]
@@ -77,14 +87,14 @@ flowchart TB
 
         SUBMIT["submit_node\nGenerate REQ-ID"]
 
-        NARROW -->|"domain + type set"| SHOW
+        NARROW -->|"commit_narrow"| SHOW
         SHOW -->|"products selected"| REVIEW
         REVIEW -->|"fill_forms"| FILL
         FILL -->|"all forms done"| CONFIRM
         CONFIRM -->|"confirm"| SUBMIT
         SUBMIT --> RA_END
 
-        NARROW -->|"missing facet"| NARROW
+        NARROW -->|"ask_user (self-loop\nvia Command(goto))"| NARROW
         SHOW -->|"open_search"| SEARCH_APP
         SHOW -->|"refine_filters"| NARROW
         SEARCH_APP -->|"products selected"| REVIEW
@@ -93,6 +103,9 @@ flowchart TB
         FILL -->|"add_more"| NARROW
         CONFIRM -->|"edit"| FILL
         CONFIRM -->|"add_more"| NARROW
+
+        CHIP_DOMAIN -->|"chip clicked"| NARROW
+        CHIP_ANON -->|"chip clicked"| NARROW
     end
 
     RA_END --> END_NODE
@@ -112,6 +125,8 @@ flowchart TB
     style STATUS_NODE fill:#3b82f6,color:#fff,stroke:#1d4ed8
     style STATUS_SVC fill:#6366f1,color:#fff,stroke:#4f46e5
 
+    style EXTRACT fill:#3b82f6,color:#fff,stroke:#1d4ed8
+    style PREFETCH fill:#3b82f6,color:#fff,stroke:#1d4ed8
     style NARROW fill:#3b82f6,color:#fff,stroke:#1d4ed8
     style SHOW fill:#3b82f6,color:#fff,stroke:#1d4ed8
     style SEARCH_APP fill:#3b82f6,color:#fff,stroke:#1d4ed8
@@ -120,8 +135,12 @@ flowchart TB
     style CONFIRM fill:#3b82f6,color:#fff,stroke:#1d4ed8
     style SUBMIT fill:#ef4444,color:#fff,stroke:#dc2626,stroke-width:2px
 
-    style INT_NARROW1 fill:#fef3c7,color:#000,stroke:#f59e0b,stroke-width:2px
-    style INT_NARROW2 fill:#fef3c7,color:#000,stroke:#f59e0b,stroke-width:2px
+    style CHIP_DOMAIN fill:#94a3b8,color:#fff,stroke:#64748b,stroke-dasharray:5 5
+    style CHIP_ANON fill:#94a3b8,color:#fff,stroke:#64748b,stroke-dasharray:5 5
+
+    style INT_NARROW fill:#fef3c7,color:#000,stroke:#f59e0b,stroke-width:2px
+    style INT_CHIP1 fill:#fef3c7,color:#000,stroke:#f59e0b,stroke-width:2px
+    style INT_CHIP2 fill:#fef3c7,color:#000,stroke:#f59e0b,stroke-width:2px
     style INT_SHOW fill:#fef3c7,color:#000,stroke:#f59e0b,stroke-width:2px
     style INT_REVIEW fill:#fef3c7,color:#000,stroke:#f59e0b,stroke-width:2px
     style INT_CONFIRM fill:#fef3c7,color:#000,stroke:#f59e0b,stroke-width:2px
@@ -142,7 +161,9 @@ flowchart LR
     subgraph Interrupts["Interrupt Types to Frontend Rendering"]
         direction TB
 
-        FS["facet_selection"] -->|"renders"| CHIPS["Clickable chip buttons\nin chat message"]
+        NM["narrow_message"] -->|"renders"| BUBBLE["Plain assistant chat bubble\nuser replies via normal input\n(default narrowing path)"]
+
+        FS["facet_selection"] -->|"renders"| CHIPS["Clickable chip buttons\nin chat message\n(nav-only escape hatch)"]
 
         PS["product_selection"] -->|"renders"| CARDS["Product cards with\ncheckboxes + action buttons\nRefine / Search / Add"]
 
@@ -155,6 +176,7 @@ flowchart LR
         CF["confirmation"] -->|"renders"| SUMMARY["Summary with\naction buttons\nSubmit / Edit / Add More"]
     end
 
+    style NM fill:#f59e0b,color:#000,stroke:#d97706
     style FS fill:#f59e0b,color:#000,stroke:#d97706
     style PS fill:#f59e0b,color:#000,stroke:#d97706
     style CR fill:#f59e0b,color:#000,stroke:#d97706
@@ -162,6 +184,7 @@ flowchart LR
     style MA2 fill:#f59e0b,color:#000,stroke:#d97706
     style CF fill:#f59e0b,color:#000,stroke:#d97706
 
+    style BUBBLE fill:#3b82f6,color:#fff,stroke:#1d4ed8
     style CHIPS fill:#3b82f6,color:#fff,stroke:#1d4ed8
     style CARDS fill:#3b82f6,color:#fff,stroke:#1d4ed8
     style CART fill:#3b82f6,color:#fff,stroke:#1d4ed8
@@ -171,6 +194,8 @@ flowchart LR
     style SEARCH fill:#10b981,color:#fff,stroke:#059669
 ```
 
+Every interrupt payload also carries a `prompt_id` (UUID per `interrupt()` call, plus the stable `"mcp_search"` id for the search panel). The frontend stores the active id in `ChatService.currentInterrupt` and passes it down to every `<app-message>` so historical bubbles whose `prompt_id` no longer matches render as **superseded** — their widget is hidden and the bubble's content is replaced with a single `User Skipped <Action>` notice. This keeps the user from clicking on stale chips/buttons after the conversation has moved on.
+
 ## Intent Switching — How Users Can Change Direction
 
 The system supports mid-flow navigation at every step. Users can escape to earlier stages or switch intent entirely.
@@ -179,7 +204,11 @@ The system supports mid-flow navigation at every step. Users can escape to earli
 stateDiagram-v2
     state "Supervisor" as SUP
     state "Request Access Subgraph" as RA {
-        state "narrow" as N
+        state "extract_search_intent" as EX
+        state "mcp_prefetch_facets" as PF
+        state "narrow_search (default)" as N
+        state "choose_domain (nav-only chips)" as CD
+        state "choose_anonymization (nav-only chips)" as CA
         state "show_results" as SR
         state "search_app" as SA
         state "review_cart" as RC
@@ -187,10 +216,15 @@ stateDiagram-v2
         state "confirm" as C
         state "submit" as S
 
-        [*] --> N
+        [*] --> EX
+        EX --> PF
+        PF --> N
 
-        N --> N : missing facet
-        N --> SR : both facets set
+        N --> N : ask_user (Command(goto=narrow_search))
+        N --> SR : commit_narrow
+
+        CD --> N : chip clicked
+        CA --> N : chip clicked
 
         SR --> SA : open_search
         SR --> N : refine_filters
@@ -227,12 +261,14 @@ stateDiagram-v2
     RA --> [*]
 ```
 
+`choose_domain` and `choose_anonymization` are reachable **only** via `nav_intent` (the user typing something like "change the anonymization") — they are not on the default story arc. The `narrow_search` self-loop is implemented as a `Command(goto="narrow_search")` after each `interrupt()` so each node execution stays at exactly one interrupt boundary, avoiding the multi-`interrupt()`-in-one-node rerun trap.
+
 ## Services and External Dependencies
 
 ```mermaid
 flowchart LR
     subgraph LLMs
-        GPT["OpenAI gpt-4o-mini"]
+        GPT["OpenAI gpt-4o (or Azure Kong)"]
     end
 
     subgraph Services
@@ -288,8 +324,12 @@ flowchart LR
 
 | Node | Interrupt Type | MCP App | Service | User Actions |
 |---|---|---|---|---|
-| `supervisor_node` | — | — | OpenAI LLM | Free text, tool routing |
-| `narrow_node` | `facet_selection` x2 | — | — | Click domain chip, click type chip |
+| `supervisor_node` | — | — | OpenAI LLM (gpt-4o) | Free text, tool routing |
+| `extract_search_intent` | — | — | OpenAI LLM | Auto: normalises free-text query, lifts `dp-NNN` study id |
+| `mcp_prefetch_facets` | — | Search MCP App (tool call) | — | Auto: caches canonical chip ids/labels once per subgraph entry |
+| `narrow_search` (default) | `narrow_message` | — | OpenAI LLM (gpt-4o, tool-calling) | Reply in chat — agent asks for missing facets and commits |
+| `choose_domain` (nav-only) | `facet_selection` | — | — | Click domain chip — reachable only via `nav_intent` |
+| `choose_anonymization` (nav-only) | `facet_selection` | — | — | Click anonymization chip — reachable only via `nav_intent` |
 | `show_results_node` | `product_selection` | — | SearchService (ChromaDB) | Select products, Open Search Panel, Refine Filters |
 | `search_app_node` | `mcp_app` | Search MCP App | — | Full search UI in panel, multi-select, confirm |
 | `review_cart_node` | `cart_review` | — | — | Fill Forms, Add More, Change Selection |
@@ -302,16 +342,21 @@ flowchart LR
 ## Key Design Patterns
 
 ### 1. Conversational Funnel + MCP App Escalation
-The flow starts with lightweight chat interactions (chip buttons for domain/type selection), progresses to richer in-chat UI (product cards), and escalates to full MCP App panels (search app, form app) only when the interaction requires it.
+The flow starts with a textual narrowing conversation (the `narrow_search` subagent — plain chat, no chips by default), progresses to richer in-chat UI (product cards), and escalates to full MCP App panels (search app, form app) only when the interaction requires it. Chip-based facet pickers (`choose_domain`, `choose_anonymization`) survive only as `nav_intent` escape hatches for users who explicitly ask to "change the anonymization" mid-flow.
 
-### 2. Universal "Back to Narrow" Escape Hatch
-Every node downstream of `narrow` can route back to it by setting `current_step = "narrow"` and clearing `selected_domain`, `selected_type`, and `search_results`. This enables:
+### 2. Universal "Back to narrow_search" Escape Hatch
+Every node downstream of `narrow_search` can route back to it through `handle_navigation` → `invalidate_downstream_state` → `goto_target_step`, which clears stale state. This enables:
 - **Refine Filters** from `show_results`
 - **Add More Products** from `review_cart`, `fill_form`, and `confirm`
 - **Change Selection** from `review_cart`
 
+When the rewind target is `narrow_search`, the invalidation step intentionally **preserves** `selected_domains` and `selected_anonymization` so the agent keeps prior context for refinements; the user's typed hint is threaded through via the `narrow_refine_hint` state field.
+
 ### 3. Supervisor as Intent Classifier
-The supervisor uses LLM tool-calling to classify user intent into one of three flows. If intent is unclear, it asks for clarification instead of guessing. After FAQ or Status Check, control returns to the supervisor for the next turn.
+The supervisor uses LLM tool-calling (gpt-4o) to classify user intent into one of three flows. If intent is unclear, it asks for clarification instead of guessing. After FAQ or Status Check, control returns to the supervisor for the next turn.
 
 ### 4. Interrupt-Driven Human-in-the-Loop
-Every user-facing step uses LangGraph's `interrupt()` to pause execution, serialize state to PostgreSQL, and wait for the frontend to resume with user input. The graph never blocks — it checkpoints and exits, resuming exactly where it left off when the user responds.
+Every user-facing step uses LangGraph's `interrupt()` to pause execution, serialize state to PostgreSQL, and wait for the frontend to resume with user input. The graph never blocks — it checkpoints and exits, resuming exactly where it left off when the user responds. Each interrupt payload carries a `prompt_id` (UUID per call, plus the stable `"mcp_search"` id for the search panel); the frontend uses id equality to gate the actionability of historical bubbles, replacing superseded ones with a `User Skipped <Action>` notice.
+
+### 5. Single-Interrupt-Per-Node Discipline
+Nodes that need multiple round-trips with the user (notably `narrow_search`) implement one `interrupt()` per node execution and route back to themselves with `Command(goto=...)` after processing the resume. This avoids the multi-`interrupt()`-in-one-node rerun trap, where non-deterministic LLM calls during replay would invalidate cached interrupt correlation.

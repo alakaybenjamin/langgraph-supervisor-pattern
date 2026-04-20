@@ -25,7 +25,7 @@ How to connect an Angular frontend to the `POST /api/v1/chat/stream` endpoint us
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  BROWSER  (Angular 19 SPA)                       │
+│  BROWSER  (Angular 21 SPA)                       │
 │                                                  │
 │  ChatService                                     │
 │    ├── sendMessage("hello")                      │
@@ -197,11 +197,14 @@ The `interrupt_value.type` field determines what UI to render:
 
 | `interrupt_value.type` | UI to Render | Resume Payload |
 |------------------------|-------------|----------------|
-| `facet_selection` | Clickable chip buttons | `{ "value": "r_and_d", "facet": "domain" }` |
+| `narrow_message` | Plain assistant chat bubble — user replies via the normal chat input; `ChatComponent` wraps the typed text as a resume | `{ "action": "user_message", "text": "..." }` |
+| `facet_selection` | Clickable chip buttons (nav-only escape hatch) | `{ "value": "r_and_d", "facet": "domain" }` |
 | `product_selection` | Product cards with checkboxes | `{ "action": "select", "products": [...] }` |
 | `cart_review` | Cart summary with action buttons | `{ "action": "fill_forms" }` |
 | `mcp_app` | Opens MCP App in side panel (see Doc 2) | `{ "form_data": "...", "submitted": true }` |
 | `confirmation` | Submit / edit / add-more buttons | `{ "confirmed": true, "action": "confirm" }` |
+
+Every payload also carries a `prompt_id` (UUID per `interrupt()` call, plus the stable `"mcp_search"` id for the search-app panel). The frontend uses this for **stale-interrupt** detection — see ["Stale-interrupt UX"](#stale-interrupt-ux) below.
 
 ---
 
@@ -1137,7 +1140,7 @@ this.messages.update((msgs) => {
 ### 5. The Interrupt Lifecycle
 
 ```
-1. Backend graph node calls interrupt({ type: "facet_selection", ... })
+1. Backend graph node calls interrupt({ type: "facet_selection", ..., prompt_id: "<uuid>" })
 2. Graph freezes, state saved to PostgreSQL
 3. Backend emits SSE event: interrupt with the interrupt value
 4. Frontend ChatService:
@@ -1151,6 +1154,20 @@ this.messages.update((msgs) => {
    → interrupt() returns data → node processes → graph continues
 10. New stream begins → tokens / next interrupt / done
 ```
+
+### 6. Stale-interrupt UX
+
+Step 6 above assumes the user clicks the widget. They often don't — they type a follow-up question, navigate, or change their mind. When that happens we need to make sure the now-stale chips/buttons on the historical bubble can't be clicked anymore.
+
+The frontend uses `prompt_id` (required on every interrupt payload — validated client-side via `INTERRUPT_REQUIRED_FIELDS`) as the source of truth for "is this widget still live?":
+
+- `ChatService.currentInterrupt` is cleared on every resume submit and replaced when a new `interrupt` SSE event arrives. Mid-stream (e.g. while an FAQ answer is being generated) it is `null`.
+- `ChatComponent` exposes `activePromptId = computed(() => currentInterrupt()?.interrupt_value?.prompt_id ?? null)` and pipes it into every `<app-message>` via an `[activePromptId]` input.
+- `MessageComponent` derives `isStale = msg.interrupt.prompt_id !== activePromptId`. When stale **and** the original interrupt carried a widget (anything except `narrow_message`), the bubble's prompt text and the widget are both replaced with a single `User Skipped <Action>` notice in dashed-badge styling. The bubble shape is preserved.
+- A separate local `resolved` flag still flips when the user actually clicks a button on the bubble, producing the green `Completed` badge — clicked-and-acted bubbles stay visually distinct from skipped ones.
+- `narrow_message` bubbles are exempt because they're plain text — there's nothing to skip past.
+
+Concrete scenario: the user sees the product picker (`product_selection`), types "what is IHD?" instead of selecting anything → the supervisor routes to FAQ → `currentInterrupt` becomes `null` while the answer streams → the product-picker bubble's `prompt_id` no longer matches → cards disappear, replaced with `User Skipped Data Product Selection`. When the FAQ answer pauses with a fresh `narrow_message` interrupt, only the new bubble is actionable.
 
 ---
 

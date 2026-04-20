@@ -70,7 +70,7 @@ User <-> Angular SPA <-> Express BFF <-> FastAPI Backend
 │   └── pyproject.toml          # Python dependencies (uv/hatch)
 │
 ├── frontend/
-│   ├── client/                 # Angular 19 SPA (standalone components)
+│   ├── client/                 # Angular 21 SPA (standalone components)
 │   │   └── src/app/
 │   │       ├── features/chat/      # Chat UI (messages, input, interrupt rendering, SSE consumer)
 │   │       ├── features/mcp-panel/ # Iframe host for MCP App resources
@@ -96,7 +96,7 @@ User <-> Angular SPA <-> Express BFF <-> FastAPI Backend
 | Web search | Tavily | via langchain-community |
 | Streaming protocol | SSE (sse-starlette) + ag-ui-protocol | sse-starlette >= 2.2 |
 | MCP protocol | MCP SDK | >= 1.9 |
-| Frontend framework | Angular | 19 |
+| Frontend framework | Angular | 21 |
 | BFF server | Express | 5 |
 | Package manager (Python) | uv | latest |
 | Package manager (JS) | npm | latest |
@@ -130,7 +130,19 @@ Every user-facing step in the request-access subgraph uses LangGraph's `interrup
 - `confirmation` — final submit/edit dialog
 - `narrow_message` — plain assistant chat bubble (no chips, no buttons); the user replies via the normal chat input. `chat_service` detects the pending interrupt and wraps the typed text as `Command(resume={"action": "user_message", "text": …})`.
 
-All payloads carry `step` + `prompt_id` so the frontend can correlate resume responses.
+All payloads carry `step` + `prompt_id` so the frontend can correlate resume responses. `prompt_id` is **required** (validated client-side via `INTERRUPT_REQUIRED_FIELDS`) and is the basis for the stale-interrupt UX described below.
+
+### 3a. Stale-Interrupt UX (`prompt_id` correlation)
+
+When the user types past an interactive interrupt instead of clicking on its widget — e.g. asks an FAQ while a `product_selection` bubble is on screen, or types "change the anonymization" while an `mcp_app` panel is open — the conversation moves on but the historical bubble would otherwise still expose stale, clickable widgets. The frontend defends against this:
+
+- `ChatService.currentInterrupt` is cleared on every resume submit and replaced when a new interrupt arrives.
+- `ChatComponent` exposes `activePromptId = currentInterrupt()?.interrupt_value?.prompt_id` and pipes it into every `<app-message>`.
+- `MessageComponent` derives `isStale = msg.interrupt.prompt_id !== activePromptId`. When stale **and** the original interrupt carried a widget (anything except `narrow_message`), the bubble's prompt text and the widget are both replaced with a single `User Skipped <Action>` notice in dashed-badge styling. The bubble shape is preserved so the transcript still reads naturally.
+- `narrow_message` bubbles are exempt — they are plain text, so there is nothing to skip past.
+- A separate `Completed` (green) badge still flips on locally when the user actually clicks a button on the bubble, keeping clicked-and-acted bubbles visually distinct from skipped ones.
+
+The contract is one-way: the backend issues a fresh `prompt_id` for every `interrupt()` call (UUIDs from `_hitl_step` and `narrow_search.py`, plus the stable `"mcp_search"` id for the search panel) and the frontend uses id equality alone to decide whether a widget is still actionable.
 
 ### 4. Conversational Narrowing Subagent (`narrow_search`)
 

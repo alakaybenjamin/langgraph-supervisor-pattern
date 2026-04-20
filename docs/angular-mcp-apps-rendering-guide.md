@@ -642,8 +642,8 @@ When the MCP App session ends, the host calls `chatService.resumeWithData(payloa
 | User action | Resume payload | What the graph node does |
 |-------------|---------------|--------------------------|
 | Submits form | `{ form_data: "{...json...}", submitted: true }` | Stores in `state.form_drafts[product_id]`, advances to next product |
-| Clicks "Add More" | `{ action: "add_more" }` | Routes back to `narrow` node to add more products |
-| Types "go back to products" | `{ action: "user_message", text: "..." }` | LLM classifies intent → may route to `review_cart` or `narrow` |
+| Clicks "Add More" | `{ action: "add_more" }` | Routes back to `narrow_search` to add more products |
+| Types "go back to products" | `{ action: "user_message", text: "..." }` | LLM classifies intent → may route to `review_cart` or `narrow_search` |
 
 ### The full loop
 

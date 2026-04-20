@@ -62,7 +62,11 @@ How LangGraph orchestrates MCP App interactions end-to-end: from graph node to U
 │  │ LangGraph (compiled graph + PostgreSQL checkpoint)│                   │
 │  │                                                    │                   │
 │  │  supervisor ──► request_access subgraph            │                   │
-│  │                   ├─ narrow (chips)                │                   │
+│  │                   ├─ extract_search_intent          │                   │
+│  │                   ├─ mcp_prefetch_facets            │                   │
+│  │                   ├─ narrow_search (text agent) ──► interrupt() │      │
+│  │                   │       (narrow_message — default)│                   │
+│  │                   ├─ choose_domain / _anonymization │ ◄ chip nav-only  │
 │  │                   ├─ show_results (cards)          │                   │
 │  │                   ├─ search_app ──► interrupt()    │ ◄── MCP App node │
 │  │                   ├─ review_cart                   │                   │
@@ -169,7 +173,7 @@ interrupt({
 
 | Field | Purpose |
 |-------|---------|
-| `type` | Always `"mcp_app"` — the frontend uses this to distinguish from other interrupt types (`facet_selection`, `product_selection`, `cart_review`, `confirmation`) |
+| `type` | Always `"mcp_app"` — the frontend uses this to distinguish from other interrupt types (`narrow_message`, `facet_selection`, `product_selection`, `cart_review`, `confirmation`) |
 | `resource_uri` | The MCP resource URI. The frontend calls `resources/read` with this to fetch the app HTML |
 | `mcp_endpoint` | The HTTP path where the MCP server is mounted (e.g. `/mcp/search-app`). The frontend's `McpService` sends JSON-RPC requests here |
 | `tool_name` | Which MCP tool to call once the app is loaded. The result is sent into the iframe as `ui/notifications/tool-result` |
@@ -281,6 +285,14 @@ The graph **never** calls the MCP server directly. The MCP servers are only acce
 | Search App | `{ selected_products: [...] }` | Stores in `state.selected_products`, routes to `review_cart` |
 | Search App | `{ cancelled: true }` | Treats as empty selection |
 | Question Form | `{ form_data: "...", submitted: true }` | Stores in `state.form_drafts[product_id]`, advances to next product or `confirm` |
-| Question Form | `{ action: "add_more" }` | Routes back to `narrow` node to add more products |
-| Question Form | `{ action: "back_to_selection" }` | Routes back to `narrow` node |
+| Question Form | `{ action: "add_more" }` | Routes back to `narrow_search` to add more products |
+| Question Form | `{ action: "back_to_selection" }` | Routes back to `narrow_search` |
 | Any MCP App | `{ action: "user_message", text: "..." }` | User typed in chat while panel was open — node processes the text (fill_form uses LLM intent classification) |
+
+## Stale-Interrupt UX (`prompt_id` correlation)
+
+Every interrupt payload carries a `prompt_id`: a fresh UUID for each `interrupt()` call (see `_hitl_step` and `narrow_search.py`), or the stable `"mcp_search"` id for the search-app panel. The frontend uses id equality to decide whether a historical bubble's widget is still actionable.
+
+`ChatService` keeps the active payload in a `currentInterrupt` signal (cleared on every resume submit, replaced on every new `interrupt` event). `ChatComponent` derives `activePromptId` from it and passes it into every `<app-message>`. When a message's own `prompt_id` no longer matches, the bubble's prompt text and any widget (chips, product cards, cart actions, confirmation buttons, MCP App trigger) are hidden and replaced with a single `User Skipped <Action>` notice in dashed-badge styling. `narrow_message` bubbles are exempt — they're plain text and have nothing to skip past.
+
+In practice this means: if the user is on the search-app MCP panel and types "I need to change the anonymization" instead of submitting from the panel, the conversation moves into `narrow_search`, the panel closes, and the historical bubble that once carried the `mcp_app` interrupt now reads `User Skipped App Action` — preventing a stale click on the now-irrelevant trigger.

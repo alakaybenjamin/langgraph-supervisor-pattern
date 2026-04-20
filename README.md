@@ -12,7 +12,7 @@ A full-stack reference implementation of the **LangGraph Supervisor Pattern** �
 ## Architecture
 
 ```
-Angular 19 SPA ──► Express BFF ──► FastAPI Backend
+Angular 21 SPA ──► Express BFF ──► FastAPI Backend
                                         │
                                   LangGraph Supervisor (gpt-4o)
                                  ┌───────┼───────────┐
@@ -20,21 +20,23 @@ Angular 19 SPA ──► Express BFF ──► FastAPI Backend
                               FAQ     Status    Request Access
                             (Tavily)  (memory)     Subgraph
                                                      │
-                                              ┌──────┼──────┐
-                                              ▼      ▼      ▼
-                                          Narrow  Search  Forms
-                                          (chips) (MCP)   (MCP)
+                                          ┌──────────┼──────────┐
+                                          ▼          ▼          ▼
+                                    NarrowSearch  Search     Forms
+                                    (text agent)  (MCP)      (MCP)
 ```
 
-The request access subgraph contains 7 interrupt-driven nodes:
+The request access subgraph runs a textual narrowing subagent first, then escalates to richer UI as needed:
 
-1. **Narrow** — Domain and type selection via chip buttons
+1. **Narrow Search** — Conversational gpt-4o subagent that asks for missing facets in plain chat, batches the optional ones in a single follow-up, and commits when the picture is complete. Replaces the legacy chip-by-chip flow as the default entry point.
 2. **Show Results** — Vector search results displayed as product cards
 3. **Search App** — Full search MCP App in a side panel
 4. **Review Cart** — Selected products summary
 5. **Fill Form** — Question form MCP App (loops per product)
 6. **Confirm** — Final summary with submit/edit/add-more
 7. **Submit** — Generates a request ID
+
+Chip-based `choose_domain` / `choose_anonymization` nodes are kept registered as `nav_intent` escape hatches but are never the default path.
 
 See [`docs/graph-architecture.md`](docs/graph-architecture.md) for detailed Mermaid diagrams.
 
@@ -47,7 +49,7 @@ See [`docs/graph-architecture.md`](docs/graph-architecture.md) for detailed Merm
 | Vector Store | ChromaDB (in-process) |
 | Graph Persistence | PostgreSQL (LangGraph checkpointer) |
 | MCP | MCP SDK (Streamable HTTP) |
-| Frontend | Angular 19, TypeScript |
+| Frontend | Angular 21, TypeScript |
 | BFF | Express 5, http-proxy-middleware |
 
 ## Prerequisites
@@ -174,7 +176,7 @@ backend/                    # FastAPI + LangGraph
   scripts/                  # Admin DB scripts (schema, checkpointer, grants)
   alembic/                  # Database migrations
 frontend/
-  client/                   # Angular 19 SPA
+  client/                   # Angular 21 SPA
   server/                   # Express BFF (proxy layer)
 docs/                       # Architecture diagrams and design docs
 ```
